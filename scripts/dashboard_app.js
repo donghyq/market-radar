@@ -1,8 +1,6 @@
-const SIG_MAP = {};
+const SIG_MAP = Object.create(null);
 (DATA.signals || []).forEach(s => { SIG_MAP[s.id] = s; });
 
-let SELECTED_IDX = 0;
-let EXPAND_ALL = false;
 
 function cleanText(s) {
   if (!s) return '';
@@ -17,7 +15,9 @@ function esc(s) {
 function getAllProjects() {
   let local = [];
   try { local = JSON.parse(localStorage.getItem('mr_custom_ideas') || '[]'); } catch(e) {}
-  const all = [...local, ...(DATA.projects || [])];
+  const merged = new Map((DATA.projects || []).map(p => [p.code, p]));
+  if (Array.isArray(local)) local.forEach(p => { if (p?.code && !merged.has(p.code)) merged.set(p.code, p); });
+  const all = [...merged.values()];
   all.sort((a,b) => (b.score || 0) - (a.score || 0));
   return all;
 }
@@ -41,7 +41,7 @@ function renderDetailCard(p, idx) {
   const chips = (p.evidence_ids || []).map(eid => {
     const s = SIG_MAP[eid];
     if (!s) return '';
-    return `<button class="btn" onclick="openSnap(${eid})">证据 #${eid} · ${esc(s.author_or_app.slice(0,14))} (${esc(s.metric_primary)})</button>`;
+    return `<button class="btn" onclick="openSnap(${eid})">证据 #${eid} · ${esc(cleanText(s.author_or_app).slice(0,14))} (${esc(s.metric_primary)})</button>`;
   }).join(' ');
 
   return `
@@ -49,18 +49,18 @@ function renderDetailCard(p, idx) {
       <div class="ins-head">
         <div>
           <div style="display:flex;gap:8px;align-items:center;">
-            <span class="pill pill-s">RANK 0${idx+1} · ${esc(comp.tier)}</span>
-            <span class="pill">${esc(p.category_tag)}</span>
+            <span class="pill pill-s">RANK ${String(idx + 1).padStart(2, '0')} · ${esc(comp.tier)}</span>
+            <span class="pill">${esc(sourceLabel(p))}</span>
           </div>
           <h2 class="ins-title">${esc(p.title)}</h2>
         </div>
         <div class="ins-score-box">
-          <div class="ins-score-big">${p.score}<span style="font-size:13px;color:var(--text-muted);font-weight:400;"> / 100</span></div>
+          <div class="ins-score-big">${scoreText(p)}<span style="font-size:13px;color:var(--text-muted);font-weight:400;"> / 100</span></div>
           <div class="ins-score-sub">${esc(p.score_detail)}</div>
         </div>
       </div>
 
-      <span class="sec-label">产品定位</span>
+      <span class="sec-label">01 / 产品定位与一句话定义</span>
       <div class="summary-lead">${esc(p.plain_what_to_do)}</div>
 
       <div class="grid-2">
@@ -75,10 +75,10 @@ function renderDetailCard(p, idx) {
         </div>
       </div>
 
-      <span class="sec-label">长期积累与团队技术沉淀</span>
+      <span class="sec-label">02 / 复利滚雪球路径与团队能力沉淀（拒绝纯苦力外包）</span>
       <div class="grid-2">
         <div class="card-cell" style="border-left:2px solid var(--accent);">
-          <span class="cell-k" style="color:var(--text);">长期积累价值</span>
+          <span class="cell-k" style="color:var(--text);">长期复利与护城河（为什么能滚雪球）</span>
           <div class="cell-v">${esc(comp.snowball)}</div>
         </div>
         <div class="card-cell" style="border-left:2px solid var(--pos);">
@@ -87,17 +87,17 @@ function renderDetailCard(p, idx) {
         </div>
       </div>
 
-      <span class="sec-label">03 / 成本、收益与合规核算</span>
+      <span class="sec-label">成本与收益假设 · 合规注意事项</span>
       <div class="grid-3">
-        <div class="card-cell"><span class="cell-k">初步成本预估</span><div class="cell-v">${esc(b.cost)}</div></div>
-        <div class="card-cell"><span class="cell-k">利润预估与收入来源</span><div class="cell-v">${esc(b.profit)}</div></div>
-        <div class="card-cell"><span class="cell-k">研发与回本周期</span><div class="cell-v">${esc(b.time)}</div></div>
-        <div class="card-cell"><span class="cell-k">人员配置</span><div class="cell-v">${esc(b.team)}</div></div>
-        <div class="card-cell"><span class="cell-k">5. 落地推进路径</span><div class="cell-v">${esc(b.landing)}</div></div>
-        <div class="card-cell"><span class="cell-k">法律与平台合规</span><div class="cell-v">${esc(b.compliance)}</div></div>
+        <div class="card-cell"><span class="cell-k">1. 初步资金成本预估</span><div class="cell-v">${esc(b.cost)}</div></div>
+        <div class="card-cell"><span class="cell-k">2. 利润预估与多元收入来源</span><div class="cell-v">${esc(b.profit)}</div></div>
+        <div class="card-cell"><span class="cell-k">3. 时间成本（研发与回本周期）</span><div class="cell-v">${esc(b.time)}</div></div>
+        <div class="card-cell"><span class="cell-k">4. 需要人数与角色配置</span><div class="cell-v">${esc(b.team)}</div></div>
+        <div class="card-cell"><span class="cell-k">5. 三阶段落地推进路径</span><div class="cell-v">${esc(b.landing)}</div></div>
+        <div class="card-cell"><span class="cell-k">6. 国内法律与平台合规边界</span><div class="cell-v">${esc(b.compliance)}</div></div>
       </div>
 
-      <span class="sec-label">最小验证方案与关联证据</span>
+      <span class="sec-label">04 / 48 小时低成本测款探针与关联一手证据快照</span>
       <div class="card-cell" style="margin-bottom:12px;">
         <span class="cell-k" style="color:var(--text);">明日可执行 48 小时测款动作（仅作需求验证探针，验证通过后转自动化产品）</span>
         <div class="cell-v">${esc(p.plan_48h)}</div>
@@ -107,76 +107,13 @@ function renderDetailCard(p, idx) {
   `;
 }
 
-function renderProjects() {
-  const list = getAllProjects();
-  document.getElementById('kpiProjects').innerText = list.length;
-  if (SELECTED_IDX >= list.length) SELECTED_IDX = 0;
-
-  const rows = list.map((p, i) => {
-    const compTier = (p.compounding && p.compounding.tier) ? p.compounding.tier : '可持续积累';
-    const b = p.biz_eval || {};
-    const isSel = (!EXPAND_ALL && i === SELECTED_IDX) ? 'selected' : '';
-    return `
-      <tr class="row-item ${isSel}" onclick="selectProject(${i})">
-        <td width="55" style="font-family:monospace;color:var(--text-muted);">0${i+1}</td>
-        <td><strong style="color:var(--text);font-weight:500;">${esc(p.title)}</strong></td>
-        <td width="175"><span class="pill ${compTier.startsWith('S') ? 'pill-s' : ''}">${esc(compTier)}</span></td>
-        <td width="160" style="color:var(--text-secondary);">${esc(p.category_tag.split('·')[0])}</td>
-        <td width="145" style="color:var(--text-secondary);">${esc((b.team || '1~2人').split('（')[0])} / ${esc((b.time || '5天').split('；')[0])}</td>
-        <td width="85"><span class="num-score">${p.score}</span> <small style="color:var(--text-muted)">/100</small></td>
-        <td width="90"><button class="btn" onclick="event.stopPropagation();selectProject(${i})">查看档案</button></td>
-      </tr>
-    `;
-  }).join('');
-
-  const detailHtml = EXPAND_ALL
-    ? list.map((p, i) => renderDetailCard(p, i)).join('')
-    : renderDetailCard(list[SELECTED_IDX], SELECTED_IDX);
-
-  document.getElementById('tab-projects').innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-      <span class="sec-label" style="margin:0;">候选立项总览矩阵（点击任意行在下方切换查看该项目的完整深度评估档案）</span>
-      <button class="btn" onclick="toggleExpandAll()">${EXPAND_ALL ? '切换为单项目聚焦模式' : '展开全部 9 个项目完整档案'}</button>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>排名</th>
-            <th>项目方向名称</th>
-            <th>项目属性</th>
-            <th>来源通道</th>
-            <th>人数与研发周期</th>
-            <th>AI 锐评总分</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-    <div id="inspectorAnchor">${detailHtml}</div>
-  `;
-}
-
-function selectProject(idx) {
-  SELECTED_IDX = idx;
-  EXPAND_ALL = false;
-  renderProjects();
-}
-
-function toggleExpandAll() {
-  EXPAND_ALL = !EXPAND_ALL;
-  renderProjects();
-}
-
 function renderSignals() {
   const sigs = DATA.signals || [];
   document.getElementById('lblSigCnt').innerText = sigs.length;
-  document.getElementById('kpiValid').innerText = sigs.filter(s => !s.is_noise).length;
   const rows = sigs.map(s => {
-    const needLogin = /(goofish|chanmama|xiaohongshu)/.test(s.source_url || '');
+    const source = sourceLink(s.source_url);
     return `
-      <tr class="sig-row" data-ch="${esc(s.channel)}" data-q="${esc(s.title + ' ' + s.content + ' ' + s.author_or_app)}">
+      <tr class="sig-row" data-ch="${esc(s.channel)}" data-noise="${s.is_noise ? 1 : 0}" data-q="${esc([s.id, s.title, s.content, s.author_or_app].join(' '))}">
         <td style="font-family:monospace;color:var(--text-muted);">#${s.id}<br><small>${esc((s.collected_at||'').slice(0,10))}</small></td>
         <td><span class="pill">${esc(s.channel)}</span><br><small style="color:var(--text-muted)">${esc(s.category)}</small></td>
         <td><strong style="color:var(--text);font-weight:500;">${esc(s.author_or_app)}</strong><br><small style="color:var(--text-muted)">${esc(s.rating_or_price)}</small></td>
@@ -184,31 +121,34 @@ function renderSignals() {
         <td style="color:var(--text-secondary);">${esc(s.metric_primary)}<br><small style="color:var(--text-muted)">${esc(s.metric_secondary)}</small></td>
         <td>
           <button class="btn" onclick="openSnap(${s.id})">本地快照</button><br>
-          <a href="${esc(s.source_url)}" target="_blank" style="font-size:11.5px;color:var(--text-muted);display:inline-block;margin-top:6px;text-decoration:none;">${needLogin ? '原站(需登录)↗' : '原网页↗'}</a>
+          ${source ? `<a class="source-link" href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${source.label} ↗</a>` : ''}
         </td>
       </tr>
     `;
   }).join('');
 
   document.getElementById('tab-signals').innerHTML = `
-    <div style="display:flex;gap:12px;margin-bottom:14px;">
-      <input id="qInput" placeholder="搜索关键词（如：Remotion、标书、报价单、差评、扣费、教培、闲鱼）..." style="max-width:420px;" oninput="filterRows()">
-      <select id="chSelect" onchange="filterRows()" style="max-width:240px;">
-        <option value="">全部渠道 (${sigs.length}条)</option>
-        <option value="AppStore">AppStore中国区差评</option>
-        <option value="B站">B站高收藏视频与热评</option>
-        <option value="微信">微信公众号实战拆解</option>
-        <option value="V2EX">V2EX开发者社区</option>
-        <option value="导表">蝉妈妈/闲鱼/小红书</option>
+    <div class="signal-controls">
+      <input id="qInput" aria-label="搜索信号" placeholder="搜索证据编号、标题、原文或来源" oninput="filterRows()">
+      <select id="chSelect" aria-label="按渠道筛选" onchange="filterRows()">
+        <option value="">全部渠道</option>
+        ${[...new Set(sigs.map(s => cleanText(s.channel)).filter(Boolean))].map(ch => `<option value="${esc(ch)}">${esc(ch)}</option>`).join('')}
       </select>
+      <select id="noiseSelect" aria-label="按有效性筛选" onchange="filterRows()">
+        <option value="valid">仅有效信号</option>
+        <option value="all">包括已过滤</option>
+        <option value="noise">仅已过滤</option>
+      </select>
+      <output id="signalCount" aria-live="polite"></output>
     </div>
-    <div class="table-wrap">
+    <div class="table-wrap" role="region" aria-label="信号明细" tabindex="0">
       <table>
         <thead><tr><th width="75">编号</th><th width="175">渠道与分类</th><th width="165">来源对象</th><th>标题与本地保存的正文摘要</th><th width="160">量化指标</th><th width="105">操作</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
   `;
+  filterRows();
 }
 
 function renderSubmitTab() {
@@ -217,7 +157,7 @@ function renderSubmitTab() {
       <div class="ins-head">
         <div>
           <span class="sec-label">内部人脉与新商机提报通道</span>
-          <h2 class="ins-title">录入新市场方向并自动执行立项评分与商业核算</h2>
+          <h2 class="ins-title">录入新方向并生成初步评估</h2>
         </div>
       </div>
       <div class="grid-2">
@@ -229,7 +169,7 @@ function renderSubmitTab() {
         <div><label class="field-lbl">6. 真实痛点与付费证据 *</label><input id="fEvidence" placeholder="例如：3家熟人卖家每月被白嫖样品亏上万，愿预付定金"></div>
         <div style="display:flex;gap:10px;">
           <div style="flex:1;"><label class="field-lbl">预计 MVP 工期</label><select id="fDays"><option value="5">3~7 天内</option><option value="12">1~2 周</option><option value="25">2 周以上</option></select></div>
-          <div style="flex:1;"><label class="field-lbl">付费确定性</label><select id="fPaid"><option value="1">已确认愿付定金/已在付费</option><option value="0">仅口头意向</option></select></div>
+          <div style="flex:1;"><label class="field-lbl">付费确定性</label><select id="fPaid"><option value="0">尚未确认付费</option><option value="1">已确认愿付定金或已付费</option></select></div>
         </div>
       </div>
       <div style="display:flex;gap:12px;align-items:center;">
@@ -280,11 +220,18 @@ function submitNewIdea() {
 
   let local = [];
   try { local = JSON.parse(localStorage.getItem('mr_custom_ideas') || '[]'); } catch(e) {}
+  if (!Array.isArray(local)) local = [];
   local.unshift(newObj);
-  localStorage.setItem('mr_custom_ideas', JSON.stringify(local));
-  SELECTED_IDX = 0;
+  try {
+    localStorage.setItem('mr_custom_ideas', JSON.stringify(local));
+  } catch {
+    document.getElementById('submitMsg').textContent = '当前浏览器无法保存，请保留填写内容。';
+    return;
+  }
+  selectedCode = newObj.code;
+  workMode = 'focus';
   renderProjects();
-  document.getElementById('submitMsg').innerText = `已生成评估档案（得分 ${total}/100），已置顶加入 01 立项评估矩阵。`;
+  document.getElementById('submitMsg').innerText = `已生成规则评分（${total}/100），方向已加到本机工作台。`;
   document.getElementById('cliBox').style.display = 'block';
   document.getElementById('cliCmd').innerText =
     `python3 scripts/radar_cli.py submit-idea --title "${title}" --proposer "${proposer}" --what "${what}" --buyer "${buyer}" --evidence "${evidence}" --channel "${channel}" --mvp-days ${days}` + (paid ? '' : ' --unpaid') + ` && python3 scripts/sync_github.py`;
@@ -324,6 +271,10 @@ function renderWhitepaper() {
 
 function renderRoadmapAndArchive() {
   const wp = DATA.whitepaper || {};
+  const archives = DATA.archives || [];
+  const archiveRows = archives.map(a => `
+    <tr><td class="mono">${esc(a.date)}</td><td class="mono">${esc(String(a.total_signals ?? '—'))}</td><td class="mono">${esc(String(a.valid_signals ?? '—'))}</td><td class="mono">${esc(String(a.noise_signals ?? '—'))}</td></tr>
+  `).join('');
   const rmHtml = (wp.roadmap || []).map(r => `
     <div class="card-cell" style="margin-bottom:12px;">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
@@ -345,8 +296,14 @@ function renderRoadmapAndArchive() {
   `).join('');
 
   document.getElementById('tab-roadmap').innerHTML = `
+    <section class="desk-panel matrix-panel archive-panel">
+      <div class="panel-head"><h3>数据批次归档</h3><span class="panel-count">${archives.length} 期</span></div>
+      ${archives.length ? `<div class="table-wrap" role="region" aria-label="历史批次明细" tabindex="0">
+        <table><thead><tr><th>日期</th><th>采集总数</th><th>有效信号</th><th>已过滤</th></tr></thead><tbody>${archiveRows}</tbody></table>
+      </div>` : '<p class="panel-empty">暂无采集批次归档。</p>'}
+    </section>
     <div class="inspector">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><span class="sec-label" style="margin:0;">本月与本季度迭代计划（与 GitHub Issue 同步）</span><a href="https://github.com/donghyq/market-radar/issues/1" target="_blank" class="btn btn-primary" style="text-decoration:none;">在 GitHub Issue #1 中查看与认领任务 ↗</a></div>
+      <div class="roadmap-title"><span class="sec-label">本月与本季度迭代计划</span><a href="https://github.com/donghyq/market-radar/issues/1" target="_blank" rel="noopener noreferrer" class="btn">查看 GitHub Issue #1 ↗</a></div>
       ${rmHtml}
       <span class="sec-label" style="margin-top:24px;">团队早期 4 个既有想法的复盘归档</span>
       ${oldHtml}
@@ -354,42 +311,76 @@ function renderRoadmapAndArchive() {
   `;
 }
 
+function sourceLink(value) {
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    const home = url.pathname === '/' && !url.search && !url.hash;
+    const listing = url.hostname === 'apps.apple.com';
+    return {url: url.href, label: home ? '平台首页' : listing ? '应用商店页面' : '来源链接',
+      hint: home ? '采集记录仅保留了平台首页，无法直接核对这条内容。' :
+        listing ? '应用页面不一定能定位到该条评论。' : '外部页面可访问性由来源平台决定。'};
+  } catch { return null; }
+}
+
 function openSnap(id) {
   const s = SIG_MAP[id];
   if (!s) return;
-  document.getElementById('mTitle').innerText = `证据 #${s.id} — ${cleanText(s.title)}`;
-  document.getElementById('mMeta').innerText = `渠道：${cleanText(s.channel)} | 来源：${cleanText(s.author_or_app)} | 指标：${cleanText(s.metric_primary)} (${cleanText(s.metric_secondary)}) | 时间：${s.collected_at}`;
-  document.getElementById('mBody').innerText = `[本地完整正文快照]\n${cleanText(s.content)}\n\n[分类与检索词]\n分类：${cleanText(s.category)} | 检索词：${cleanText(s.query_term)} | 价格/评分：${cleanText(s.rating_or_price)}\n标签：${cleanText(s.pain_tags || '有效信号')}`;
-  document.getElementById('mLink').href = s.source_url || '#';
-  document.getElementById('snapModal').style.display = 'flex';
+  document.getElementById('mTitle').textContent = `证据 #${s.id} — ${cleanText(s.title)}`;
+  document.getElementById('mMeta').textContent = `${evidenceKind(s)} · ${cleanText(s.channel)} · ${cleanText(s.author_or_app)} · ${cleanText(s.collected_at)}`;
+  document.getElementById('mBody').textContent = [
+    s.is_noise ? `已过滤：${cleanText(s.noise_reason) || '未记录原因'}` : '',
+    '[采集时保存的内容]',
+    String(s.content || '').trim(),
+    '',
+    '[指标与分类]',
+    [s.metric_primary, s.metric_secondary, s.rating_or_price].filter(Boolean).map(cleanText).join(' · '),
+    [s.category, s.query_term, s.pain_tags].filter(Boolean).map(cleanText).join(' · '),
+  ].filter((line, i) => i !== 0 || line).join('\n');
+  const source = sourceLink(s.source_url);
+  const link = document.getElementById('mLink');
+  link.hidden = !source;
+  if (source) {
+    link.href = source.url;
+    link.textContent = source.label + ' ↗';
+  } else link.removeAttribute('href');
+  document.getElementById('mHint').textContent = source?.hint || '当前记录没有可用的原站链接。';
+  document.getElementById('snapModal').showModal();
 }
 
 function switchTab(id, btn) {
   ['tab-projects','tab-signals','tab-submit','tab-whitepaper','tab-roadmap'].forEach(t => {
     document.getElementById(t).style.display = (t === id) ? 'block' : 'none';
   });
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-}
-
-function filterRows() {
-  const q = (document.getElementById('qInput').value || '').toLowerCase();
-  const ch = document.getElementById('chSelect').value || '';
-  document.querySelectorAll('.sig-row').forEach(r => {
-    const mq = !q || r.dataset.q.toLowerCase().includes(q);
-    const mch = !ch || r.dataset.ch.includes(ch);
-    r.style.display = (mq && mch) ? '' : 'none';
+  document.querySelectorAll('.nav-btn').forEach(b => {
+    b.classList.toggle('active', b === btn);
+    if (b === btn) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
   });
 }
 
-(function init() {
-  document.getElementById('lblUpdated').innerText = DATA.updated_at || '';
-  const archs = DATA.archives || [];
-  document.getElementById('kpiArchives').innerText = `${archs.length || 1}`;
-  document.getElementById('lblBatches').innerText = archs.map(a => a.date).join(', ') || '2026-11-18';
+function filterRows() {
+  const q = document.getElementById('qInput').value.trim().toLowerCase();
+  const id = q.match(/^#(\d+)$/)?.[1];
+  const ch = document.getElementById('chSelect').value;
+  const noise = document.getElementById('noiseSelect').value;
+  let count = 0;
+  document.querySelectorAll('.sig-row').forEach(r => {
+    const match = (!q || (id ? r.dataset.q.split(' ')[0] === id : r.dataset.q.toLowerCase().includes(q)))
+      && (!ch || r.dataset.ch === ch)
+      && (noise === 'all' || r.dataset.noise === (noise === 'noise' ? '1' : '0'));
+    r.hidden = !match;
+    if (match) count++;
+  });
+  document.getElementById('signalCount').textContent = `显示 ${count} 条`;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('lblUpdated').textContent = DATA.updated_at || '未记录';
+  document.getElementById('lblBatches').textContent = DATA.archives?.[0]?.date || '暂无';
   renderProjects();
   renderSignals();
   renderSubmitTab();
   renderWhitepaper();
   renderRoadmapAndArchive();
-})();
+});

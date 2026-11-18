@@ -4,6 +4,9 @@
 本地入口：克隆仓库后直接打开根目录 `index.html`（单文件自包含，内置全量证据快照，无需外部网络请求或登录）。
 Roadmap 追踪（GitHub Issue #1）：`https://github.com/donghyq/market-radar/issues/1`
 
+
+研究工作台提供候选列表、五维评分、关联市场信号和 48 小时验证记录。「横向比较」可对照所有候选的分项评分与证据数量。验证记录只保存在当前浏览器；归档页展示仓库已保存的数据批次。
+
 ---
 
 ## 一、系统架构与工程设计
@@ -177,4 +180,4 @@ python3 scripts/sync_github.py
 
 ### 5.2 如何修改或新增立项深度评估档案？
 - **新增独立项目**：直接在 `data/ideas/` 目录下新建一个 `.json` 文件（参考 `data/ideas/AUTO-DISC-01.json` 结构，包含 `workflow_steps`、`compounding` 复利成长评估、`biz_eval` 成本与收益核算表与 `evidence_ids` 关联证据编号数组），然后运行 `python3 scripts/export_dashboard.py`。
-- **调整前端界面**：修改 `scripts/template.html`（样式与布局）或 `scripts/dashboard_app.js`（渲染逻辑），运行 `python3 scripts/export_dashboard.py` 重新编译单文件 `index.html`。
+- **调整前端界面**：修改 `scripts/template.html`（页面结构）、`scripts/workstation.css`（工作台样式）或 `scripts/research_workstation.js`（工作台交互），运行 `python3 scripts/export_dashboard.py` 重新编译单文件 `index.html`。

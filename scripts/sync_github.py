@@ -23,6 +23,8 @@ STATIC_FILES = [
     "scripts/discovery_scanner.py",
     "scripts/auto_browser_collector.py",
     "scripts/collab_utils.py",
+    "scripts/research_workstation.js",
+    "scripts/workstation.css",
     "scripts/export_dashboard.py",
     "scripts/template.html",
     "scripts/dashboard_app.js",

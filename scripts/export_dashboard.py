@@ -15,6 +15,17 @@ WP_PATH = pathlib.Path(__file__).resolve().parent / "whitepaper_config.json"
 TPL_PATH = pathlib.Path(__file__).resolve().parent / "template.html"
 
 
+def render_page(bundle):
+    page = TPL_PATH.read_text(encoding="utf-8")
+    for name in ("dashboard_app.js", "research_workstation.js"):
+        code = TPL_PATH.with_name(name).read_text(encoding="utf-8")
+        page = page.replace(f'<script src="scripts/{name}"></script>', f"<script>\n{code}\n</script>")
+    css = TPL_PATH.with_name("workstation.css").read_text(encoding="utf-8")
+    page = page.replace('<link rel="stylesheet" href="scripts/workstation.css">', f"<style>\n{css}\n</style>")
+    data = json.dumps(bundle, ensure_ascii=False).replace("<", r"\u003c")
+    return page.replace("__RADAR_DATA_JSON__", data)
+
+
 def export_all(conn=None, base_dir=BASE_DIR):
     close_conn = False
     if conn is None:
@@ -58,9 +69,7 @@ def export_all(conn=None, base_dir=BASE_DIR):
         "archives": archives,
     }
 
-    tpl = TPL_PATH.read_text(encoding="utf-8")
-    js_code = (pathlib.Path(__file__).resolve().parent / "dashboard_app.js").read_text(encoding="utf-8")
-    page = tpl.replace("__RADAR_DATA_JSON__", json.dumps(bundle, ensure_ascii=False)).replace("<script src=\"scripts/dashboard_app.js\"></script>", f"<script>\n{js_code}\n</script>")
+    page = render_page(bundle)
     OUT_HTML.write_text(page, encoding="utf-8")
     DOCS_HTML.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(OUT_HTML, DOCS_HTML)
