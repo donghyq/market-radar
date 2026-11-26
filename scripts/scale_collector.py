@@ -23,6 +23,8 @@ from typing import Any, Dict, List, Tuple
 import radar_cli
 from collab_utils import dump_db_to_jsonl, sync_db_from_jsonl
 from persona_and_freshness import ensure_columns, enrich_all_signals
+from signal_time import epoch_time
+from user_comments import archive_comments, restore_comments
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 SSL_CTX = ssl._create_unverified_context()
@@ -40,9 +42,9 @@ def is_within_days(date_str: str, max_days: int = 180) -> bool:
         return False
 
 
-def fetch_appstore_category(cat_and_term: Tuple[str, str]) -> List[Dict[str, str]]:
+def fetch_appstore_category(cat_and_term: Tuple[str, str]):
     category, term = cat_and_term
-    out: List[Dict[str, str]] = []
+    out = []
     pain_words = [
         "扣费", "会员", "太贵", "不好用", "闪退", "客服", "导出", "限制", "套路",
         "收费", "广告", "微信", "打印", "卡顿", "报错", "消失", "同步", "水印",
@@ -57,14 +59,12 @@ def fetch_appstore_category(cat_and_term: Tuple[str, str]) -> List[Dict[str, str
             apps = json.loads(resp.read().decode("utf-8", errors="ignore")).get("results", [])
 
         for app in apps:
-            tid = app.get("trackId")
-            tname = app.get("trackName", "")
+            tid = str(app.get("trackId") or "")
             rcnt = int(app.get("userRatingCount") or 0)
-            avg = round(float(app.get("averageUserRating") or 0), 2)
-            aurl = app.get("trackViewUrl", f"https://apps.apple.com/cn/app/id{tid}")
-            if not tid or rcnt < 150:
+            if not tid.isdecimal() or rcnt < 150:
                 continue
 
+            reviews = []
             for page_no in (1, 2):
                 rss_u = f"https://itunes.apple.com/cn/rss/customerreviews/page={page_no}/id={tid}/sortby=mostrecent/json"
                 r_req = urllib.request.Request(rss_u, headers={"User-Agent": UA})
@@ -80,7 +80,8 @@ def fetch_appstore_category(cat_and_term: Tuple[str, str]) -> List[Dict[str, str
                     rating = (e.get("im:rating") or {}).get("label", "")
                     if rating not in ("1", "2", "3"):
                         continue
-                    pub_dt = ((e.get("updated") or {}).get("label") or "")[:10]
+                    pub = (e.get("updated") or {}).get("label") or ""
+                    pub_dt = pub[:10]
                     if not is_within_days(pub_dt, 180):
                         continue
                     rt = radar_cli.strip_html((e.get("title") or {}).get("label", ""))
@@ -88,23 +89,14 @@ def fetch_appstore_category(cat_and_term: Tuple[str, str]) -> List[Dict[str, str
                     if len(rc) < 16:
                         continue
                     if any(w in (rt + rc) for w in pain_words):
-                        out.append({
-                            "channel": "AppStore中国区差评(实时API)",
-                            "source_tier": "实时API抓取",
-                            "category": category,
-                            "query_term": term,
-                            "title": f"[{rating}星差评] {rt}",
-                            "content": rc,
-                            "author": tname,
-                            "m1": f"App总评 {rcnt} 条",
-                            "m2": f"均分 {avg}",
-                            "price": f"{rating}星 / 付费内购痛点",
-                            "url": aurl,
-                            "pub": pub_dt,
-                        })
-                        picked += 1
+                        comment = radar_cli.appstore_review_comment(e, tid)
+                        if comment:
+                            reviews.append(comment)
+                            picked += 1
                         if picked >= 12:
                             break
+            if reviews:
+                out.append((app, category, term, reviews))
     except Exception:
         pass
     return out
@@ -143,6 +135,7 @@ def fetch_github_issues_batch(repo_info: Tuple[str, str]) -> List[Dict[str, str]
                 "price": "开发者/复刻真实卡点",
                 "url": iss.get("html_url", f"https://github.com/{repo}/issues"),
                 "pub": pub_dt,
+                "source_pub": iss.get("created_at") or "",
             })
     except Exception:
         pass
@@ -189,6 +182,7 @@ def fetch_wechat_batch(cat_and_q: Tuple[str, str]) -> List[Dict[str, str]]:
                 "price": "行业案例与需求",
                 "url": href,
                 "pub": pub_dt,
+                "source_pub": epoch_time(tsm.group(1)),
             })
     except Exception:
         pass
@@ -227,6 +221,7 @@ def fetch_v2ex_nodes() -> List[Dict[str, str]]:
                     "price": "社区真实需求",
                     "url": it.get("url", ""),
                     "pub": pub_dt,
+                    "source_pub": epoch_time(ts),
                 })
         except Exception:
             pass
@@ -238,6 +233,7 @@ def main():
     radar_cli.init_db(conn)
     ensure_columns(conn)
     sync_db_from_jsonl(conn, BASE_DIR, radar_cli.insert_signal)
+    restore_comments(conn, BASE_DIR)
 
     appstore_tasks = [
         ("电商卖家与主图工具", "电商 主图 批量 水印"),
@@ -282,10 +278,12 @@ def main():
     ]
 
     collected_records: List[Dict[str, str]] = []
+    inserted = 0
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
         for batch in ex.map(fetch_appstore_category, appstore_tasks):
-            collected_records.extend(batch)
+            for app, category, term, reviews in batch:
+                inserted += radar_cli.save_appstore_feedback(conn, app, category, term, reviews)
         for batch in ex.map(fetch_github_issues_batch, github_issue_tasks):
             collected_records.extend(batch)
         for batch in ex.map(fetch_wechat_batch, wechat_tasks):
@@ -293,7 +291,6 @@ def main():
 
     collected_records.extend(fetch_v2ex_nodes())
 
-    inserted = 0
     for rec in collected_records:
         ok = radar_cli.insert_signal(
             conn=conn,
@@ -309,10 +306,13 @@ def main():
             rating_or_price=rec["price"],
             source_url=rec["url"],
             published_at=rec["pub"],
+            source_published_at=rec["source_pub"],
+            published_time_source=rec["channel"],
         )
         if ok:
             inserted += 1
     conn.commit()
+    archive_comments(conn, BASE_DIR)
 
     stats = radar_cli.clean_and_tag_signals(conn)
     rep = enrich_all_signals(conn, TODAY.isoformat())

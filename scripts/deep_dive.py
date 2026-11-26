@@ -21,6 +21,8 @@ from typing import List, Tuple
 
 import radar_cli
 from collab_utils import dump_db_to_jsonl, sync_db_from_jsonl
+from signal_time import epoch_time
+from user_comments import archive_comments, restore_comments
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 SSL_CTX = ssl._create_unverified_context()
@@ -125,23 +127,11 @@ def deep_scan_bilibili_microduck(conn: sqlite3.Connection) -> None:
                 fav = int(item.get("favorites") or 0)
                 author = item.get("author", "")
                 bvid = item.get("bvid", "")
+                if not bvid:
+                    continue
                 aid = item.get("aid")
                 fav_ratio = round((fav / play * 100), 1) if play > 0 else 0.0
-
-                comments_summary = []
-                if aid:
-                    try:
-                        rep_url = f"https://api.bilibili.com/x/v2/reply?type=1&oid={aid}&sort=1&ps=8"
-                        rep_json = json.loads(opener.open(rep_url, timeout=6).read().decode("utf-8", errors="ignore"))
-                        for rep in (rep_json.get("data", {}).get("replies") or [])[:5]:
-                            msg = radar_cli.strip_html(rep.get("content", {}).get("message", ""))
-                            lk = rep.get("like", 0)
-                            if msg:
-                                comments_summary.append(f"({lk}赞)“{msg[:70]}”")
-                    except Exception:
-                        pass
-
-                c_str = " / ".join(comments_summary) if comments_summary else "暂无热评摘要"
+                video_url = f"https://www.bilibili.com/video/{bvid}"
                 radar_cli.insert_signal(
                     conn=conn,
                     channel="B站视频与评论(实时API)",
@@ -149,13 +139,16 @@ def deep_scan_bilibili_microduck(conn: sqlite3.Connection) -> None:
                     category="具身智能与AI宠物硬件",
                     query_term=kw,
                     title=title,
-                    content=f"视频简介: {desc[:140]} | 评论区真实反馈匯总: {c_str}",
+                    content=f"视频简介: {desc[:140]}",
                     author_or_app=f"UP主: {author}",
                     metric_primary=f"{play} 播放 / {fav} 收藏",
                     metric_secondary=f"收藏率 {fav_ratio}%",
                     rating_or_price="高热度硬件复刻" if play >= 10000 else "实机演示",
-                    source_url=f"https://www.bilibili.com/video/{bvid}",
+                    source_url=video_url,
+                    source_published_at=epoch_time(item.get("pubdate")),
+                    published_time_source="bilibili_video_pubdate",
                 )
+                radar_cli.collect_bilibili_replies(conn, opener, aid, video_url, limit=5, page_size=8)
         except Exception as exc:
             print(f"[WARN] B站深潜跳过 ({kw}): {exc}")
     conn.commit()
@@ -165,6 +158,7 @@ def main():
     conn = radar_cli.get_conn()
     radar_cli.init_db(conn)
     sync_db_from_jsonl(conn, BASE_DIR, radar_cli.insert_signal)
+    restore_comments(conn, BASE_DIR)
 
     deep_scan_github_inflection(conn)
     deep_scan_bilibili_microduck(conn)
@@ -176,6 +170,7 @@ def main():
         ],
     )
     stats = radar_cli.clean_and_tag_signals(conn)
+    archive_comments(conn, BASE_DIR)
     dump_db_to_jsonl(conn, BASE_DIR)
     print(f"[DEEP-DIVE] 深潜完成！当前库内总信号={stats['total']} (有效={stats['valid']})")
 

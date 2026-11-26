@@ -18,6 +18,8 @@ import sys
 import urllib.parse
 from typing import Any, Dict, List
 
+from signal_time import MARKET_TIMEZONE, market_today, source_time
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
@@ -62,27 +64,25 @@ def load_default_keywords() -> str:
     return "microduck,桌面机器人,知识动画代做,标书检查,考研学习规划表"
 
 CHROME_PATH = find_system_browser()
-TODAY = datetime.date.today()
+TODAY = market_today()
 
 
 def parse_xhs_date(tag_text: str) -> str:
-    if not tag_text:
-        return TODAY.isoformat()
     t = tag_text.strip()
-    if "今天" in t or "小时前" in t or "分钟前" in t or "刚刚" in t:
-        return TODAY.isoformat()
-    if "昨天" in t:
-        return (TODAY - datetime.timedelta(days=1)).isoformat()
-    m_ago = re.search(r"(\d+)\s*天前", t)
-    if m_ago:
-        return (TODAY - datetime.timedelta(days=int(m_ago.group(1)))).isoformat()
-    m_ymd = re.search(r"(202\d-\d{2}-\d{2})", t)
-    if m_ymd:
-        return m_ymd.group(1)
-    m_md = re.match(r"^(\d{2})-(\d{2})$", t)
-    if m_md:
-        return f"{TODAY.year}-{m_md.group(1)}-{m_md.group(2)}"
-    return TODAY.isoformat()
+    now = datetime.datetime.now(MARKET_TIMEZONE)
+    if t in ("今天", "刚刚"):
+        return now.date().isoformat()
+    if t == "昨天":
+        return (now.date() - datetime.timedelta(days=1)).isoformat()
+    ago = re.fullmatch(r"(\d+)\s*(天|小时|分钟)前", t)
+    if ago:
+        units = {"天": 1440, "小时": 60, "分钟": 1}
+        minutes = int(ago[1]) * units[ago[2]]
+        try:
+            return (now - datetime.timedelta(minutes=minutes)).date().isoformat()
+        except OverflowError:
+            return ""
+    return source_time(t)[0]
 
 
 def parse_xianyu_response(data: Dict[str, Any], kw: str) -> List[Dict[str, str]]:
@@ -153,11 +153,8 @@ def parse_xhs_response(data: Dict[str, Any], kw: str) -> List[Dict[str, str]]:
                     pub_raw = tg.get("text") or ""
             pub_dt = parse_xhs_date(pub_raw)
             # 拦截超 180 天的陈旧小红书笔记
-            try:
-                if (TODAY - datetime.date.fromisoformat(pub_dt)).days > 180:
-                    continue
-            except Exception:
-                pass
+            if pub_dt and (TODAY - datetime.date.fromisoformat(pub_dt[:10])).days > 180:
+                continue
 
             url = f"https://www.xiaohongshu.com/explore/{nid}" + (f"?xsec_token={xsec}&xsec_source=pc_search" if xsec else "")
             out.append({
@@ -166,13 +163,14 @@ def parse_xhs_response(data: Dict[str, Any], kw: str) -> List[Dict[str, str]]:
                 "category": f"小红书需求验证:{kw}",
                 "query_term": kw,
                 "title": f"[小红书笔记] {title[:95]}",
-                "content": f"小红书一线需求/实测笔记：《{title}》 — 作者：{user}，当前获赞：{liked}，发布时间标签：{pub_raw or '近期'}",
+                "content": f"小红书一线需求/实测笔记：《{title}》 — 作者：{user}，当前获赞：{liked}，发布时间标签：{pub_raw or '未知'}",
                 "author": f"小红书 @{user}",
                 "m1": f"{liked} 点赞",
-                "m2": f"发布: {pub_raw or pub_dt}",
+                "m2": f"发布: {pub_raw or pub_dt or '未知'}",
                 "price": "高互动种草/求助",
                 "url": url,
                 "pub": pub_dt,
+                "source_pub": pub_dt,
             })
         except Exception:
             continue
@@ -343,6 +341,8 @@ def run_browser_collector(mode: str, targets: List[str], keywords: List[str]) ->
             rating_or_price=rec["price"],
             source_url=rec["url"],
             published_at=rec["pub"],
+            source_published_at=rec.get("source_pub", ""),
+            published_time_source="xiaohongshu_publish_label",
         )
         if ok:
             added += 1

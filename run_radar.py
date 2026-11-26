@@ -16,10 +16,10 @@ SCRIPTS = ROOT / "scripts"
 PY = sys.executable
 
 
-def run_script(script_name: str, extra_args=None):
+def run_script(script_name: str, extra_args=None) -> int:
     cmd = [PY, str(SCRIPTS / script_name)] + (extra_args or [])
     print("\n>>> 执行:", " ".join(cmd))
-    subprocess.run(cmd, cwd=str(ROOT))
+    return subprocess.run(cmd, cwd=str(ROOT)).returncode
 
 
 def ensure_playwright():
@@ -42,7 +42,7 @@ def menu():
         print("  [3] 按自定义关键词抓取 闲鱼价格想要数 / 蝉妈妈榜单（低频拟人安全模式）")
         print("  [4] 查看或添加团队长期监测词库 (config/watch_keywords.json)")
         print("  [5] 将我本机新抓的数据与团队 GitHub 总库安全合并并发布线上看板")
-        print("  [6] 在浏览器中打开本地最新工作台 (index.html)")
+        print("  [6] 生成并打开本地最新工作台（含评论）")
         print("  [0] 退出")
         print("------------------------------------------------------------")
         choice = input("请输入功能编号 [0-6] 并回车: ").strip()
@@ -83,7 +83,13 @@ def menu():
             print("\n正在拉取团队远端最新数据、执行无损去重合并并同步至 GitHub...")
             run_script("sync_github.py")
         elif choice == "6":
-            html_file = ROOT / "index.html"
+            if run_script("radar_cli.py", ["export", "--with-comments"]):
+                print("本地工作台生成失败，请查看上方错误。")
+                continue
+            html_file = ROOT / ".market-radar" / "index.html"
+            if not html_file.is_file():
+                print("未找到生成的本地工作台。")
+                continue
             webbrowser.open(html_file.as_uri())
             print("已在默认浏览器打开:", html_file)
         else:

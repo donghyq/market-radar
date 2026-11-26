@@ -11,7 +11,8 @@ Roadmap 追踪（GitHub Issue #2）：`https://github.com/donghyq/market-radar/i
 1. **拉取仓库并获得权限**：管理员在 GitHub 仓库 `Settings -> Collaborators` 中添加成员账号后，成员克隆仓库并确保已登录 `gh auth login`。
 2. **零命令菜单式采集**：
    - **macOS**：直接双击根目录 `Mac一键采集向导.command`（或终端执行 `python3 run_radar.py`）
-   - **Windows**：直接双击根目录 `Windows一键采集向导.bat`
+   - **Windows**：装好 Python 3 后，双击根目录 `Windows一键采集向导.bat`
+   - 选 `[1]` 采集 App Store、B 站等公开渠道，再选 `[6]` 生成并打开本地工作台，在信号库点「评论（N）」。
    - 先选 `[2]` 扫码登录一次自己的闲鱼/小红书/蝉妈妈（登录态仅保存在个人电脑 `.browser_profile/`，互不干扰），再选 `[3]` 输入任意关键词即可自动抓包入库。
 3. **无损合并上传**：在菜单选 `[5]`（或执行 `python3 scripts/sync_github.py`），脚本会自动拉取远端队友刚抓的数据按唯一指纹去重合并，重新编译看板并同步上线，不会互相覆盖。
 
@@ -164,6 +165,19 @@ python3 scripts/radar_cli.py submit-idea \
 python3 scripts/sync_github.py --check
 python3 scripts/sync_github.py
 ```
+
+### 4.6 本地导入评论和核对用户标签
+
+将获准使用的评论表保存为 `inbox/comments_*.csv`（Git 忽略）。评论行包含 `record_type=comment`、`channel`、平台内唯一的 `comment_id`、`parent_url` 和 `content`。可附 `commented_at`（ISO 日期或带时区时间）、`source_url`、`author_profile_url`。已有的用户资料可填 `age`、`ip_location`（平台展示的属地）、`occupation`、`interests` 以及共同的 `profile_source`，也可为单个字段填对应的 `<字段>_source`。
+
+运行现有 App Store 或 B 站采集流程时，应用和视频进信号库，抓到的评价和留言进本地评论库。系统用平台评论 ID 去重，以应用页或视频链接关联对应信号。App Store 评论时间采用平台返回的评价更新时间。
+
+```bash
+python scripts/radar_cli.py import-csv
+python scripts/radar_cli.py export --with-comments
+```
+
+在 `.market-radar/index.html` 的信号库查看评论、标签和覆盖率，在 `.market-radar/exports/signals_full.csv` 核对标签来源。评论和这些导出都保存在 Git 忽略的本地目录，正常发布页仍走原有入口。
 
 ---
 

@@ -12,8 +12,39 @@ function buildCollectCmd() {
 }
 
 
-function freshBadge(tier, pubDate) {
+const SIGNAL_DAY_MS = 86400000;
+const MARKET_OFFSET_MS = 8 * 3600000;
+
+function signalTiming(s, now = Date.now()) {
+  const legacyDate = !s.source_published_at && s.published_time_source === 'legacy_archive_date';
+  const raw = legacyDate ? s.published_at : s.source_published_at;
+  const precision = legacyDate ? 'date' : s.published_time_precision;
+  const unknown = {tier: 'recent_unverified', hour24: false, order: -Infinity};
+  if (!raw || !['date', 'timestamp'].includes(precision)) return unknown;
+
+  const dayOnly = precision === 'date';
+  const stamp = Date.parse(dayOnly ? raw + 'T00:00:00Z' : raw);
+  const today = Math.floor((now + MARKET_OFFSET_MS) / SIGNAL_DAY_MS);
+  const day = Math.floor((stamp + (dayOnly ? 0 : MARKET_OFFSET_MS)) / SIGNAL_DAY_MS);
+  const age = today - day;
+  if (!Number.isFinite(stamp) || age < 0 || (!dayOnly && stamp > now)) return unknown;
+
+  const tier = age <= 7 ? '7d_hot' : age <= 30 ? '30d_active' :
+    age <= 90 ? '90d_recent' : age <= 180 ? '180d_halfyear' : 'stale_archive';
+  return {tier, hour24: !dayOnly && now - stamp <= SIGNAL_DAY_MS,
+    order: dayOnly ? stamp - MARKET_OFFSET_MS : stamp};
+}
+
+function signalPublishedText(s) {
+  if (signalTiming(s).tier !== 'recent_unverified') {
+    return s.source_published_at || s.published_at + '（归档标记）';
+  }
+  return s.published_at ? '待核实（旧记录 ' + s.published_at + '）' : '待核实';
+}
+
+function freshBadge(tier, pubDate, hour24) {
   const dt = esc(pubDate || "未知");
+  if (hour24) return `<span class="fresh-badge fresh-7d">近 24 小时 · ${dt}</span>`;
   if (tier === "7d_hot") return `<span class="fresh-badge fresh-7d">近7天 · ${dt}</span>`;
   if (tier === "30d_active") return `<span class="fresh-badge fresh-30d">近30天 · ${dt}</span>`;
   if (tier === "90d_recent" || tier === "180d_halfyear") return `<span class="fresh-badge fresh-90d">近期 · ${dt}</span>`;
@@ -36,13 +67,41 @@ function jumpToAudienceSignals(audName) {
 
 function renderPersonaAndFreshness() {
   const ps = DATA.persona_stats || {};
-  const fb = ps.freshness_breakdown || {};
   const personas = ps.audience_personas || [];
-  const hot7 = fb["7d_hot"] || 0;
-  const act30 = fb["30d_active"] || 0;
-  const rec90 = (fb["90d_recent"] || 0) + (fb["180d_halfyear"] || 0);
-  const stale = fb["stale_archive"] || 0;
   const maxTotal = Math.max(1, ...personas.map(p => p.total || 1));
+  const showComments = Boolean(DATA.comment_coverage);
+  const windows = [
+    ['24h', '近 24 小时'],
+    ['7d_hot', '近 7 天（其余）'],
+    ['30d_active', '8–30 天'],
+    ['90d_recent', '31–90 天'],
+    ['180d_halfyear', '91–180 天'],
+    ['stale_archive', '超过 180 天'],
+    ['recent_unverified', '时间待核实'],
+  ];
+  const distribution = new Map(windows.map(([key]) => [key, {signals: 0, comments: 0}]));
+  const now = Date.now();
+  for (const record of DATA.signals || []) {
+    if (record.is_noise) continue;
+    const {hour24, tier} = signalTiming(record, now);
+    const counts = distribution.get(hour24 ? '24h' : tier);
+    counts[record.record_type === 'comment' ? 'comments' : 'signals']++;
+  }
+  const layers = [['signals', '信号']];
+  if (showComments) layers.push(['comments', '已导入评论']);
+  const timeCards = layers.map(([kind, title]) => `
+    <section class="timeline-layer" aria-labelledby="timeline-${kind}">
+      <h3 id="timeline-${kind}">${title}</h3>
+      <div class="timeline-grid">
+        ${windows.map(([key, label]) => `
+          <div class="card-cell" data-window="${key}">
+            <span class="cell-k">${label}</span>
+            <div class="timeline-count">${distribution.get(key)[kind]} <small>条</small></div>
+          </div>
+        `).join('')}
+      </div>
+    </section>
+  `).join('');
 
   const pRows = personas.map((p, idx) => {
     const freshPct = Math.round(((p.fresh_30d || 0) / maxTotal) * 100);
@@ -76,33 +135,11 @@ function renderPersonaAndFreshness() {
     <div class="inspector" style="margin-bottom:18px;">
       <div class="ins-head" style="margin-bottom:16px;padding-bottom:12px;">
         <div>
-          <span class="sec-label">01 / 信号真实发布时间线核验（区分源站发布日期与爬虫入库日期）</span>
-          <h2 class="ins-title">时效性分布：自动隔离半年以上陈旧内容，聚焦当下市场真实热度</h2>
-        </div>
-        <span class="pill pill-s">采集端已启用 180 天新鲜度拦截</span>
-      </div>
-      <div class="timeline-grid">
-        <div class="card-cell" style="border-left:3px solid var(--accent);">
-          <span class="cell-k">近 7 天当下信号（源站新发）</span>
-          <div style="font-size:26px;font-weight:700;color:var(--text);font-family:var(--mono);">${hot7} <small style="font-size:12px;color:var(--text-muted);font-weight:400;">条</small></div>
-          <div class="cell-v" style="margin-top:4px;">本周最新涌现的用户差评、高热复刻与新物种</div>
-        </div>
-        <div class="card-cell" style="border-left:3px solid #3b82f6;">
-          <span class="cell-k">8 ~ 30 天当月活跃信号</span>
-          <div style="font-size:26px;font-weight:700;color:var(--text);font-family:var(--mono);">${act30} <small style="font-size:12px;color:var(--text-muted);font-weight:400;">条</small></div>
-          <div class="cell-v" style="margin-top:4px;">当月正在持续产生交易与讨论的有效痛点</div>
-        </div>
-        <div class="card-cell">
-          <span class="cell-k">31 ~ 180 天近期基线信号</span>
-          <div style="font-size:26px;font-weight:700;color:var(--text);font-family:var(--mono);">${rec90} <small style="font-size:12px;color:var(--text-muted);font-weight:400;">条</small></div>
-          <div class="cell-v" style="margin-top:4px;">半年内仍具参考价值的赛道需求证据</div>
-        </div>
-        <div class="card-cell" style="border-left:3px solid #ef4444;">
-          <span class="cell-k">已识别隔离的历史旧帖 (&gt;180天)</span>
-          <div style="font-size:26px;font-weight:700;color:#fca5a5;font-family:var(--mono);">${stale} <small style="font-size:12px;color:var(--text-muted);font-weight:400;">条</small></div>
-          <div class="cell-v" style="margin-top:4px;">经反查源站时间戳揪出的早年旧教程，信号库默认隐藏防误导</div>
+          <span class="sec-label">01 / 按发布时间统计有效记录</span>
+          <h2 class="ins-title">时效性分布</h2>
         </div>
       </div>
+      <div id="freshnessDistribution">${timeCards}</div>
     </div>
 
     <div class="inspector">
@@ -134,6 +171,7 @@ function renderPersonaAndFreshness() {
 
 const SIG_MAP = Object.create(null);
 (DATA.signals || []).forEach(s => { SIG_MAP[s.id] = s; });
+const {commentsByPost, postByComment} = indexSignalComments(DATA.signals || []);
 
 
 function cleanText(s) {
@@ -247,20 +285,28 @@ let FILTERED_SIGS = [];
 
 function renderSignals() {
   const sigs = DATA.signals || [];
-  document.getElementById('lblSigCnt').innerText = sigs.filter(s => !s.is_noise && s.freshness_tier !== 'stale_archive').length;
+  const now = Date.now();
+  document.getElementById('lblSigCnt').innerText = sigs.filter(s => !s.is_noise && signalTiming(s, now).tier === '7d_hot').length;
   const allAuds = [...new Set(sigs.map(s => cleanText(s.audience_tag)).filter(Boolean))];
   const allChs = [...new Set(sigs.map(s => cleanText(s.channel)).filter(Boolean))];
+  const coverage = DATA.comment_coverage;
 
   document.getElementById('tab-signals').innerHTML = `
     <div class="signal-controls" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">
       <input id="qInput" style="max-width:260px;" aria-label="搜索信号" placeholder="搜索编号(#12)、标题、原文或人群..." oninput="SIG_PAGE=1;filterRows()">
       <select id="timeSelect" style="max-width:205px;" aria-label="按发布时效筛选" onchange="SIG_PAGE=1;filterRows()">
-        <option value="active180">当下有效信号 (剔除超半年旧帖)</option>
-        <option value="7d">仅看近 7 天新发布</option>
-        <option value="30d">仅看近 30 天内发布</option>
-        <option value="all_time">全部时间 (含早期历史旧帖)</option>
-        <option value="stale_only">仅看被隔离的超半年旧帖</option>
+        <option value="24h">近 24 小时</option>
+        <option value="7d" selected>近 7 天</option>
+        <option value="30d">近 30 天</option>
+        <option value="active180">近 180 天</option>
+        <option value="stale_only">超过 180 天</option>
+        <option value="unknown">时间待核实</option>
+        <option value="all_time">全部时间</option>
       </select>
+      ${coverage ? `<select id="sortSelect" aria-label="排序方式" onchange="SIG_PAGE=1;filterRows()">
+        <option value="post">发帖时间优先</option>
+        <option value="comment" selected>新评时间优先</option>
+      </select>` : ''}
       <select id="audSelect" style="max-width:215px;" aria-label="按买单人群筛选" onchange="SIG_PAGE=1;filterRows()">
         <option value="">全部买单人群 (${allAuds.length}类)</option>
         ${allAuds.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('')}
@@ -273,11 +319,21 @@ function renderSignals() {
         <option value="valid">有效信号</option>
         <option value="all">含噪音</option>
       </select>
+      ${coverage ? `<select id="recordSelect" aria-label="按记录类型筛选" onchange="SIG_PAGE=1;filterRows()">
+        <option value="">全部记录</option><option value="comment">仅看评论</option>
+        <option value="signal">仅看信号</option>
+      </select>` : ''}
       <output id="signalCount" aria-live="polite" style="font-size:12.5px;color:var(--text-muted);"></output>
     </div>
+    ${coverage?.total ? `<p id="commentCoverage" style="color:var(--text-muted);font-size:12px;">
+      标签覆盖（${coverage.total} 条评论）${Object.entries(COMMENT_LABEL_NAMES).map(([key, name]) => {
+        const n = coverage.counts[key];
+        return `${name} ${n}/${coverage.total}（${(100*n/coverage.total).toFixed(1)}%）`;
+      }).join(' · ')}
+    </p>` : ''}
     <div class="table-wrap" role="region" aria-label="信号明细" tabindex="0">
       <table>
-        <thead><tr><th width="130">编号 / 源站发布日</th><th width="185">渠道 / 买单人群画像</th><th width="160">来源对象</th><th>标题与本地保存的正文摘要</th><th width="155">量化指标</th><th width="95">操作</th></tr></thead>
+        <thead><tr><th class="signal-time">编号 / 源站发布日</th><th width="185">渠道 / 买单人群画像</th><th width="160">来源对象</th><th>标题与本地保存的正文摘要</th><th width="155">量化指标</th><th width="95">操作</th></tr></thead>
         <tbody id="sigTbody"></tbody>
       </table>
     </div>
@@ -293,6 +349,12 @@ function changeSigPage(delta) {
   document.getElementById('tab-signals')?.scrollIntoView({block:'start'});
 }
 
+function signalExcerpt(value, limit) {
+  const text = cleanText(value);
+  const characters = [...text];
+  return characters.length > limit ? characters.slice(0, limit).join('') + '...' : text;
+}
+
 function renderSigPage() {
   const total = FILTERED_SIGS.length;
   const totalPages = Math.max(1, Math.ceil(total / SIG_PAGE_SIZE));
@@ -300,28 +362,42 @@ function renderSigPage() {
   const start = (SIG_PAGE - 1) * SIG_PAGE_SIZE;
   const slice = FILTERED_SIGS.slice(start, start + SIG_PAGE_SIZE);
 
-  const rowsHtml = slice.map(s => {
+  const now = Date.now();
+  const rowsHtml = slice.map(({signal: s, matchedComment}) => {
     const source = sourceLink(s.source_url);
-    const pubDate = s.published_at || (s.collected_at||'').slice(0,10);
-    const colDate = (s.collected_at||'').slice(0,10);
-    const fTier = s.freshness_tier || '30d_active';
+    const timing = signalTiming(s, now);
+    const comments = commentsByPost.get(s.id) || [];
+    let commentTime = '';
+    if (matchedComment) {
+      const activity = signalTiming(matchedComment, now);
+      if (activity.tier !== 'recent_unverified') {
+        const label = activity.hour24 ? '近 24 小时有新评论' : '评论时间';
+        commentTime = `<small>${label} · ${esc(matchedComment.source_published_at)}</small><br>`;
+      }
+    }
+    const colDate = s.observed_at || s.collected_at || '未知';
     const aud = s.audience_tag || '未分类人群';
+    const title = signalExcerpt(s.title, 30);
+    const summary = signalExcerpt(s.content, 200);
     return `
       <tr class="sig-row">
-        <td style="font-family:monospace;color:var(--text-muted);">
+        <td class="signal-time">
           <b>#${s.id}</b><br>
-          ${freshBadge(fTier, pubDate)}<br>
-          <small style="font-size:10.5px;">入库 ${esc(colDate)}</small>
+          ${freshBadge(timing.tier, signalPublishedText(s), timing.hour24)}<br>
+          ${commentTime}
+          <small>入库 ${esc(colDate)}</small>
         </td>
         <td>
           <span class="pill">${esc(s.channel)}</span><br>
-          <span class="aud-pill">${esc(aud)}</span>
+          <span class="aud-pill">${s.record_type === 'comment' ? '用户评论' : esc(aud)}</span>
         </td>
         <td><strong style="color:var(--text);font-weight:500;">${esc(s.author_or_app)}</strong><br><small style="color:var(--text-muted)">${esc(s.rating_or_price)}</small></td>
-        <td>${s.is_noise ? '<span class="pill" style="color:#f87171;">已过滤噪音</span> ' : ''}<strong style="color:var(--text);font-weight:500;">${esc(s.title)}</strong><br><span style="color:var(--text-secondary)">${esc(s.content)}</span></td>
-        <td style="color:var(--text-secondary);">${esc(s.metric_primary)}<br><small style="color:var(--text-muted)">${esc(s.metric_secondary)}</small></td>
+        <td>${s.is_noise ? '<span class="pill" style="color:#f87171;">已过滤噪音</span> ' : ''}<strong style="color:var(--text);font-weight:500;">${esc(title)}</strong><br><span style="color:var(--text-secondary)">${esc(summary)}</span></td>
+        <td style="color:var(--text-secondary);">${s.record_type === 'comment'
+          ? [s.metric_primary, ...commentTagLines(s)].filter(Boolean).map(esc).join('<br>')
+          : esc(s.metric_primary) + '<br><small style="color:var(--text-muted)">' + esc(s.metric_secondary) + '</small>'}</td>
         <td>
-          <button class="btn" onclick="openSnap(${s.id})">本地快照</button><br>
+          <button class="btn" onclick="openSnap(${s.id})">${comments.length ? `评论（${comments.length}）` : '本地快照'}</button><br>
           ${source ? `<a class="source-link" href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${source.label} ↗</a>` : ''}
         </td>
       </tr>
@@ -611,28 +687,139 @@ function sourceLink(value) {
   } catch { return null; }
 }
 
+function postKey(value) {
+  const source = sourceLink(value);
+  if (!source) return '';
+  const url = new URL(source.url);
+  if (/^(?:(?:www|m)\.)?bilibili\.com$/.test(url.hostname)) {
+    const video = url.pathname.match(/^\/video\/(BV[A-Za-z0-9]+|av\d+)\/?$/);
+    if (video) return 'bilibili:' + video[1];
+  }
+  if (/^(?:www\.)?xiaohongshu\.com$/.test(url.hostname)) {
+    const note = url.pathname.match(/^\/(?:explore|discovery\/item)\/([\da-f]{24})\/?$/i);
+    if (note) return 'xiaohongshu:' + note[1].toLowerCase();
+  }
+  if (url.hostname === 'apps.apple.com') {
+    const app = url.pathname.match(/\/id(\d+)\/?$/);
+    if (app) return 'appstore:' + app[1];
+  }
+  return url.pathname === '/' ? '' : url.href;
+}
+
+function indexSignalComments(signals) {
+  const posts = new Map();
+  const commentsByPost = new Map();
+  const postByComment = new Map();
+  for (const post of signals) {
+    if (post.record_type === 'comment' || /^(?:B站评论区痛点|AppStore中国区差评)/.test(post.channel)) continue;
+    const key = postKey(post.source_url);
+    if (!key) continue;
+    const previous = posts.get(key);
+    if (previous && key.startsWith('bilibili:')) {
+      if (post.id < previous.id) posts.set(key, post);
+    } else {
+      posts.set(key, posts.has(key) ? null : post);
+    }
+  }
+  for (const comment of signals) {
+    if (comment.record_type !== 'comment') continue;
+    const post = posts.get(postKey(comment.parent_url));
+    if (!post) continue;
+    postByComment.set(comment.id, post);
+    if (!commentsByPost.has(post.id)) commentsByPost.set(post.id, []);
+    commentsByPost.get(post.id).push(comment);
+  }
+  return {commentsByPost, postByComment};
+}
+
+function evidenceLink(source, caption) {
+  const link = document.createElement('a');
+  link.href = source.url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = caption + ' ↗';
+  return link;
+}
+
+const COMMENT_LABEL_NAMES = {age: '年龄段', ip_location: 'IP 属地', occupation: '职业', interests: '喜好'};
+
+function commentTagLines(s, includeSource = false) {
+  return Object.entries(COMMENT_LABEL_NAMES).map(([key, name]) => {
+    const tag = s.profile_tags[key];
+    const evidence = includeSource && tag.source ? `（${tag.source}${tag.quote ? ' · ' + tag.quote : ''}）` : '';
+    return `${name}：${tag.value}${evidence}`;
+  });
+}
+
+function appendSnapshotComments(body, comments) {
+  if (!comments?.length) return;
+  const section = document.createElement('section');
+  const heading = document.createElement('h3');
+  heading.textContent = `评论（${comments.length}）`;
+  section.append(heading);
+  const now = Date.now();
+  const ordered = comments.map(comment => ({comment, order: signalTiming(comment, now).order}));
+  ordered.sort((a, b) => b.order - a.order || b.comment.id - a.comment.id);
+  for (const {comment} of ordered) {
+    const article = document.createElement('article');
+    const meta = document.createElement('strong');
+    meta.textContent = [signalPublishedText(comment), comment.author_or_app, comment.metric_primary].filter(Boolean).join(' · ');
+    const content = document.createElement('div');
+    content.textContent = [comment.content, `态度：${comment.stance}`, ...commentTagLines(comment, true)].join('\n');
+    article.append(document.createElement('hr'), meta, content);
+    const source = sourceLink(comment.source_url);
+    if (source && source.url !== sourceLink(comment.parent_url)?.url) {
+      article.append(evidenceLink(source, '查看原评论'));
+    }
+    const profile = sourceLink(comment.author_profile_url);
+    if (profile) {
+      if (article.lastElementChild?.tagName === 'A') article.append(' · ');
+      article.append(evidenceLink(profile, '用户主页'));
+    }
+    section.append(article);
+  }
+  body.append(section);
+}
+
 function openSnap(id) {
   const s = SIG_MAP[id];
   if (!s) return;
   document.getElementById('mTitle').textContent = `证据 #${s.id} — ${cleanText(s.title)}`;
-  document.getElementById('mMeta').textContent = `源站发布：${cleanText(s.published_at || '未知')} | 采集入库：${cleanText(s.collected_at)} | 人群画像：${cleanText(s.audience_tag || '通用')} | 渠道：${cleanText(s.channel)}`;
-  document.getElementById('mBody').textContent = [
+  const isComment = s.record_type === 'comment';
+  const timeLabel = isComment ? '评论时间' : s.published_time_source === 'legacy_archive_date' ? '发帖日期' : '源站时间';
+  const audience = isComment ? '' : ` | 人群画像：${cleanText(s.audience_tag || '通用')}`;
+  document.getElementById('mMeta').textContent = `${timeLabel}：${signalPublishedText(s)} | 采集入库：${s.observed_at || cleanText(s.collected_at)}${audience} | 渠道：${cleanText(s.channel)}`;
+  const body = document.getElementById('mBody');
+  body.textContent = [
     s.is_noise ? `已过滤：${cleanText(s.noise_reason) || '未记录原因'}` : '',
     '[采集时保存的内容]',
     String(s.content || '').trim(),
     '',
-    '[指标与分类]',
+    isComment ? '[用户标签]' : '[指标与分类]',
     [s.metric_primary, s.metric_secondary, s.rating_or_price].filter(Boolean).map(cleanText).join(' · '),
     [s.category, s.audience_tag, s.persona_note].filter(Boolean).map(cleanText).join(' · '),
+    ...(isComment ? [...commentTagLines(s, true), `态度：${s.stance}`, `意图：${s.intents.join('、') || '不明确'}`] : []),
   ].filter((line, i) => i !== 0 || line).join('\n');
+  appendSnapshotComments(body, commentsByPost.get(s.id));
+  body.scrollTop = 0;
   const source = sourceLink(s.source_url);
+  const parent = isComment ? sourceLink(s.parent_url) : null;
   const link = document.getElementById('mLink');
   link.hidden = !source;
   if (source) {
     link.href = source.url;
-    link.textContent = source.label + ' ↗';
+    link.textContent = (isComment ? (parent?.url === source.url ? '原帖' : '查看原评论') : source.label) + ' ↗';
   } else link.removeAttribute('href');
-  document.getElementById('mHint').textContent = '';
+  const hint = document.getElementById('mHint');
+  hint.replaceChildren();
+  if (parent && parent.url !== source?.url) {
+    hint.append(evidenceLink(parent, '原帖'));
+  }
+  const profile = isComment && sourceLink(s.author_profile_url);
+  if (profile) {
+    if (hint.hasChildNodes()) hint.append(' · ');
+    hint.append(evidenceLink(profile, '用户主页'));
+  }
   document.getElementById('snapModal').showModal();
 }
 
@@ -735,33 +922,64 @@ function switchTab(id, btn) {
   });
 }
 
+function signalMatches(s, query) {
+  const tags = s.profile_tags ? commentTagLines(s).join(' ') : '';
+  return `${s.id} ${s.title} ${s.content} ${s.author_or_app} ${s.audience_tag} ${tags}`.toLowerCase().includes(query);
+}
+
 function filterRows() {
   const sigs = DATA.signals || [];
   const q = (document.getElementById('qInput')?.value || '').trim().toLowerCase();
-  const id = q.match(/^#(\d+)$/)?.[1];
+  const id = q.match(/^#(-?\d+)$/)?.[1];
   const ch = document.getElementById('chSelect')?.value || '';
   const aud = document.getElementById('audSelect')?.value || '';
-  const tMode = document.getElementById('timeSelect')?.value || 'active180';
+  const tMode = document.getElementById('timeSelect')?.value || '7d';
+  const sortMode = document.getElementById('sortSelect')?.value || 'post';
   const noise = document.getElementById('noiseSelect')?.value || 'valid';
+  const recordType = document.getElementById('recordSelect')?.value || '';
+  const now = Date.now();
+  const timing = new Map(sigs.map(s => [s.id, signalTiming(s, now)]));
+  const noiseMatches = s => noise === 'all' || Boolean(s.is_noise) === (noise === 'noise');
+  const displayRow = s => {
+    const post = !recordType && !id ? postByComment.get(s.id) : null;
+    return post && noiseMatches(post) ? post : s;
+  };
 
-  FILTERED_SIGS = sigs.filter(s => {
-    const f = s.freshness_tier || '30d_active';
+  const matches = sigs.filter(s => {
+    const {tier: f, hour24} = timing.get(s.id);
     let timeOk = true;
-    if (tMode === 'active180') timeOk = (f !== 'stale_archive');
+    if (tMode === 'active180') timeOk = !['stale_archive', 'recent_unverified'].includes(f);
+    else if (tMode === '24h') timeOk = hour24;
     else if (tMode === '7d') timeOk = (f === '7d_hot');
     else if (tMode === '30d') timeOk = (f === '7d_hot' || f === '30d_active');
     else if (tMode === 'stale_only') timeOk = (f === 'stale_archive');
-    if (!timeOk) return false;
-    if (noise !== 'all' && Boolean(s.is_noise) !== (noise === 'noise')) return false;
-    if (ch && cleanText(s.channel) !== ch) return false;
-    if (aud && cleanText(s.audience_tag) !== aud) return false;
+    else if (tMode === 'unknown') timeOk = (f === 'recent_unverified');
+    if (!timeOk && !id) return false;
+    if (!noiseMatches(s)) return false;
+    const post = displayRow(s);
+    if (ch && cleanText(s.channel) !== ch && cleanText(post.channel) !== ch) return false;
+    if (recordType && (s.record_type || 'signal') !== recordType) return false;
+    if (aud && cleanText(s.audience_tag) !== aud && cleanText(post.audience_tag) !== aud) return false;
     if (q) {
       if (id) return String(s.id) === id;
-      const hay = `${s.id} ${s.title} ${s.content} ${s.author_or_app} ${s.audience_tag}`.toLowerCase();
-      return hay.includes(q);
+      return signalMatches(s, q) || (post !== s && signalMatches(post, q));
     }
     return true;
   });
+  const rows = new Map();
+  for (const match of matches) {
+    const signal = displayRow(match);
+    if (!rows.has(signal.id)) rows.set(signal.id, {signal, matchedComment: null});
+    const row = rows.get(signal.id);
+    if (match !== signal && (!row.matchedComment || timing.get(match.id).order > timing.get(row.matchedComment.id).order)) {
+      row.matchedComment = match;
+    }
+  }
+  const sortTime = ({signal, matchedComment}) => {
+    const commentTime = timing.get(matchedComment?.id)?.order;
+    return sortMode === 'comment' && Number.isFinite(commentTime) ? commentTime : timing.get(signal.id).order;
+  };
+  FILTERED_SIGS = [...rows.values()].sort((a, b) => sortTime(b) - sortTime(a) || a.signal.id - b.signal.id);
   renderSigPage();
 }
 

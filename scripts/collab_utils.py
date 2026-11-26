@@ -3,12 +3,91 @@
 import datetime
 import hashlib
 import json
+import os
 import pathlib
 import sqlite3
+import tempfile
+from contextlib import contextmanager
+
+from signal_time import LEGACY_DATE_SOURCE, market_today, source_time
 
 
 def now_str() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+@contextmanager
+def atomic_text(path: pathlib.Path, *, encoding: str = "utf-8"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding=encoding, newline="\n", dir=path.parent, delete=False
+        ) as stream:
+            temp = pathlib.Path(stream.name)
+            yield stream
+        os.replace(temp, path)
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
+
+
+def restore_signal(conn, r, insert_fn) -> bool:
+    """Restore an archived signal, including IDs referenced by project evidence."""
+    fields = (
+        "channel", "source_tier", "category", "query_term", "title", "content",
+        "author_or_app", "metric_primary", "metric_secondary", "rating_or_price",
+        "source_url", "published_at", "collected_at", "source_published_at",
+        "published_time_source", "observed_at",
+    )
+    values = {field: r.get(field, "") for field in fields}
+    values["source_tier"] = r.get("source_tier", "历史归档")
+    signal_id = r.get("id")
+    added = insert_fn(
+        conn=conn,
+        signal_id=signal_id if type(signal_id) is int and signal_id > 0 else None,
+        **values,
+    )
+    if not values["source_published_at"] and (
+        not values["observed_at"] or values["published_time_source"] == LEGACY_DATE_SOURCE
+    ):
+        legacy_day, precision = source_time(values["published_at"])
+        if precision == "date":
+            conn.execute(
+                """UPDATE raw_signals SET published_time_source=?
+                   WHERE channel=? AND title=? AND author_or_app=? AND published_at=?
+                     AND COALESCE(source_published_at, '')=''
+                     AND COALESCE(published_time_source, '')=''""",
+                (LEGACY_DATE_SOURCE, values["channel"], values["title"][:200],
+                 values["author_or_app"][:100], legacy_day),
+            )
+    if added:
+        conn.execute(
+            """UPDATE raw_signals SET pain_tags=?, is_noise=?, noise_reason=?,
+               freshness_tier=?, audience_tag=?, persona_note=?, first_seen=?, last_seen=?
+               WHERE id=last_insert_rowid()""",
+            (
+                r.get("pain_tags", ""), r.get("is_noise", 0), r.get("noise_reason", ""),
+                r.get("freshness_tier", "30d_active"), r.get("audience_tag", ""),
+                r.get("persona_note", ""),
+                r.get("first_seen", ""), r.get("last_seen", ""),
+            ),
+        )
+    elif any(r.get(field) for field in ("first_seen", "last_seen", "observed_at")):
+        conn.execute(
+            """UPDATE raw_signals
+               SET first_seen=COALESCE(NULLIF(first_seen, ''), ?),
+                   last_seen=COALESCE(NULLIF(last_seen, ''), ?),
+                   observed_at=COALESCE(NULLIF(observed_at, ''), ?)
+               WHERE channel=? AND title=? AND author_or_app=?
+                 AND (COALESCE(first_seen, '')='' OR COALESCE(last_seen, '')=''
+                      OR COALESCE(observed_at, '')='')""",
+            (
+                r.get("first_seen") or "", r.get("last_seen") or "", r.get("observed_at") or "",
+                values["channel"], values["title"][:200], values["author_or_app"][:100],
+            ),
+        )
+    return added
 
 
 def sync_db_from_jsonl(conn: sqlite3.Connection, base_dir: pathlib.Path, insert_fn) -> int:
@@ -19,40 +98,31 @@ def sync_db_from_jsonl(conn: sqlite3.Connection, base_dir: pathlib.Path, insert_
     for line in jsonl_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
-        r = json.loads(line)
-        ok = insert_fn(
-            conn=conn,
-            channel=r.get("channel", ""),
-            source_tier=r.get("source_tier", "历史归档"),
-            category=r.get("category", ""),
-            query_term=r.get("query_term", ""),
-            title=r.get("title", ""),
-            content=r.get("content", ""),
-            author_or_app=r.get("author_or_app", ""),
-            metric_primary=r.get("metric_primary", ""),
-            metric_secondary=r.get("metric_secondary", ""),
-            rating_or_price=r.get("rating_or_price", ""),
-            source_url=r.get("source_url", ""),
-            published_at=r.get("published_at", ""),
-            collected_at=r.get("collected_at", ""),
-        )
-        if ok:
+        if restore_signal(conn, json.loads(line), insert_fn):
             loaded += 1
     conn.commit()
     return loaded
 
 
 def dump_db_to_jsonl(conn: sqlite3.Connection, base_dir: pathlib.Path) -> int:
+    from persona_and_freshness import enrich_all_signals
+    today = market_today().isoformat()
+    rep = enrich_all_signals(conn, today)
+    conn.execute(
+        """UPDATE raw_signals
+           SET first_seen=COALESCE(NULLIF(first_seen, ''), substr(collected_at, 1, 10)),
+               last_seen=COALESCE(NULLIF(last_seen, ''), NULLIF(substr(observed_at, 1, 10), ''),
+                                  NULLIF(first_seen, ''), substr(collected_at, 1, 10))
+           WHERE COALESCE(first_seen, '')='' OR COALESCE(last_seen, '')=''"""
+    )
+    conn.commit()
     rows = [dict(r) for r in conn.execute("SELECT * FROM raw_signals ORDER BY id ASC").fetchall()]
     jsonl_path = base_dir / "data" / "signals" / "signals_master.jsonl"
     jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    with jsonl_path.open("w", encoding="utf-8") as f:
+    with atomic_text(jsonl_path) as f:
         for r in rows:
             key = f"{r['channel']}|{r['title']}|{r['author_or_app']}"
             r["uid"] = hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
-            r["first_seen"] = (r.get("collected_at") or today)[:10]
-            r["last_seen"] = today
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
     arch_dir = base_dir / "data" / "archives"
@@ -65,8 +135,6 @@ def dump_db_to_jsonl(conn: sqlite3.Connection, base_dir: pathlib.Path) -> int:
         "noise_signals": sum(1 for r in rows if r["is_noise"]),
     }
     (arch_dir / f"{today}.json").write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
-    from persona_and_freshness import enrich_all_signals
-    rep = enrich_all_signals(conn, today)
     (base_dir / "data" / "persona_stats.json").write_text(json.dumps(rep, ensure_ascii=False, indent=2), encoding="utf-8")
     return len(rows)
 

@@ -28,6 +28,9 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
+from signal_time import epoch_time, market_today, newest_results, observed_now, source_day, source_time
+from user_comments import save_comment
+
 BASE_WORKSPACE = pathlib.Path(__file__).resolve().parent.parent
 DB_PATH = BASE_WORKSPACE / "radar.db"
 INBOX_DIR = BASE_WORKSPACE / "inbox"
@@ -109,7 +112,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.commit()
+    from persona_and_freshness import ensure_columns
+    from user_comments import init_comments
+    init_comments(conn)
+    ensure_columns(conn)
 
 
 def strip_html(text: str) -> str:
@@ -135,33 +141,111 @@ def insert_signal(
     source_url: str,
     published_at: str = "",
     collected_at: str = "",
+    *,
+    source_published_at: str = "",
+    published_time_source: str = "",
+    observed_at: Optional[str] = None,
+    signal_id: Optional[int] = None,
 ) -> bool:
+    raw_time, precision = source_time(source_published_at)
+    observed_at = observed_now() if observed_at is None else observed_at
+    author = author_or_app[:100]
+    title = title[:200]
     cur = conn.cursor()
+    # Skip known duplicates before SQLite allocates an AUTOINCREMENT value.
     cur.execute(
         """
         INSERT OR IGNORE INTO raw_signals (
-            channel, source_tier, category, query_term, title, content,
+            id, channel, source_tier, category, query_term, title, content,
             author_or_app, metric_primary, metric_secondary, rating_or_price,
-            source_url, collected_at, published_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_url, collected_at, published_at, source_published_at,
+            published_time_source, published_time_precision, observed_at
+        ) SELECT
+            CASE WHEN EXISTS (SELECT 1 FROM raw_signals WHERE id = ?) THEN NULL ELSE ? END,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (
+            SELECT 1 FROM raw_signals WHERE channel=? AND title=? AND author_or_app=?
+        )
         """,
         (
-            channel,
+            signal_id, signal_id, channel,
             source_tier,
             category,
             query_term,
-            title[:200],
+            title,
             content[:1000],
-            author_or_app[:100],
+            author,
             metric_primary[:80],
             metric_secondary[:80],
             rating_or_price[:80],
             source_url[:500],
             collected_at or now_str(),
-            (published_at or (collected_at or now_str())[:10])[:10],
+            (published_at or raw_time or (collected_at or now_str())[:10])[:10],
+            raw_time,
+            published_time_source if raw_time else "",
+            precision,
+            observed_at,
+            channel, title, author,
         ),
     )
-    return cur.rowcount > 0
+    added = cur.rowcount > 0
+    if not added and raw_time:
+        cur.execute(
+            """UPDATE raw_signals SET source_published_at=?, published_time_source=?,
+               published_time_precision=?, observed_at=COALESCE(NULLIF(observed_at, ''), ?)
+               WHERE channel=? AND title=? AND author_or_app=?
+                 AND (COALESCE(source_published_at, '')='' OR
+                      (published_time_precision='date' AND ?='timestamp'))""",
+            (raw_time, published_time_source, precision, observed_at, channel, title, author, precision),
+        )
+    return added
+
+
+def appstore_review_comment(entry, app_id):
+    review_id = str((entry.get("id") or {}).get("label") or "").strip()
+    content = (entry.get("content") or {}).get("label") or ""
+    if not review_id or not content.strip():
+        return None
+    title = ((entry.get("title") or {}).get("label") or "").strip()
+    reviewer = (entry.get("author") or {}).get("name") or {}
+    rating = (entry.get("im:rating") or {}).get("label") or ""
+    return {
+        "channel": "App Store",
+        "comment_id": review_id,
+        "parent_url": f"https://apps.apple.com/cn/app/id{app_id}",
+        "content": f"{title}\n{content}" if title and title != content.strip() else content,
+        "author_or_app": reviewer.get("label", ""),
+        "commented_at": (entry.get("updated") or {}).get("label") or "",
+        "comment_time_source": "appstore_review_updated",
+        "source_metric": f"{rating} 星" if rating else "",
+    }
+
+
+def save_appstore_feedback(conn, app, category, term, reviews):
+    if not reviews:
+        return 0
+    app_id = app["trackId"]
+    channel = "AppStore应用(实时API)"
+    parent_url = reviews[0]["parent_url"]
+    existing = conn.execute(
+        "SELECT id FROM raw_signals WHERE channel=? AND source_url=?", (channel, parent_url)
+    ).fetchone()
+    added = False
+    if existing is None:
+        name = app.get("trackName") or f"App Store 应用 {app_id}"
+        rating_count = app.get("userRatingCount") or 0
+        average = round(float(app.get("averageUserRating") or 0), 2)
+        added = insert_signal(
+            conn=conn, channel=channel, source_tier="实时API抓取", category=category, query_term=term,
+            title=name, content=strip_html(app.get("description") or "") or f"App Store 应用：{name}",
+            author_or_app=f"App Store #{app_id}", metric_primary=f"App总评 {rating_count} 条",
+            metric_secondary=f"均分 {average}", rating_or_price="",
+            source_url=parent_url, source_published_at=app.get("releaseDate") or "",
+            published_time_source="appstore_release_date",
+        )
+    for comment in reviews:
+        save_comment(conn, comment)
+    return int(added)
 
 
 def collect_appstore(conn: sqlite3.Connection, custom_queries: Optional[List[Tuple[str, str]]] = None) -> int:
@@ -183,12 +267,9 @@ def collect_appstore(conn: sqlite3.Connection, custom_queries: Optional[List[Tup
             with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="ignore"))
             for app in data.get("results", []):
-                track_id = app.get("trackId")
-                track_name = app.get("trackName", "")
-                rating_cnt = app.get("userRatingCount", 0)
-                avg_rating = round(app.get("averageUserRating", 0), 2)
-                app_url = app.get("trackViewUrl", f"https://apps.apple.com/cn/app/id{track_id}")
-                if not track_id or rating_cnt < 100:
+                track_id = str(app.get("trackId") or "")
+                rating_cnt = app.get("userRatingCount") or 0
+                if not track_id.isdecimal() or rating_cnt < 100:
                     continue
                 rss_url = f"https://itunes.apple.com/cn/rss/customerreviews/page=1/id={track_id}/sortby=mostrecent/json"
                 rss_req = urllib.request.Request(rss_url, headers={"User-Agent": USER_AGENT})
@@ -197,42 +278,57 @@ def collect_appstore(conn: sqlite3.Connection, custom_queries: Optional[List[Tup
                 entries = rss_data.get("feed", {}).get("entry", [])
                 if isinstance(entries, dict):
                     entries = [entries]
-                picked_for_app = 0
+                reviews = []
                 for entry in entries:
                     rating = entry.get("im:rating", {}).get("label", "")
                     if rating not in ("1", "2", "3"):
                         continue
-                    pub_dt = (entry.get("updated", {}).get("label", "") or "")[:10]
-                    if pub_dt and (datetime.date.today() - datetime.date.fromisoformat(pub_dt)).days > 180:
+                    pub = entry.get("updated", {}).get("label", "") or ""
+                    pub_dt = source_day(pub)
+                    if pub_dt and (market_today() - datetime.date.fromisoformat(pub_dt)).days > 180:
                         continue
                     r_title = strip_html(entry.get("title", {}).get("label", ""))
                     r_content = strip_html(entry.get("content", {}).get("label", ""))
                     combined = f"{r_title} {r_content}"
                     if any(k in combined for k in pain_keywords) or len(r_content) >= 12:
-                        ok = insert_signal(
-                            conn=conn,
-                            channel="AppStore中国区差评(实时API)",
-                            source_tier="实时API抓取",
-                            category=category,
-                            query_term=term,
-                            title=f"[{rating}星差评] {r_title}",
-                            content=r_content,
-                            author_or_app=track_name,
-                            metric_primary=f"App总评 {rating_cnt} 条",
-                            metric_secondary=f"均分 {avg_rating}",
-                            rating_or_price=f"{rating}星 / 内购订阅制",
-                            source_url=app_url,
-                            published_at=pub_dt,
-                        )
-                        if ok:
-                            added += 1
-                        picked_for_app += 1
-                        if picked_for_app >= 3:
+                        comment = appstore_review_comment(entry, track_id)
+                        if comment:
+                            reviews.append(comment)
+                        if len(reviews) >= 3:
                             break
+                added += save_appstore_feedback(conn, app, category, term, reviews)
         except Exception as exc:
             print(f"[WARN] AppStore采集异常 ({term}): {exc}")
     conn.commit()
     return added
+
+
+def collect_bilibili_replies(conn, opener, aid, parent_url, *, limit=1, page_size=5):
+    if not aid:
+        return
+    rep_url = f"https://api.bilibili.com/x/v2/reply?type=1&oid={aid}&sort=1&ps={page_size}"
+    try:
+        response = opener.open(rep_url, timeout=6).read().decode("utf-8", errors="ignore")
+        replies = (json.loads(response).get("data") or {}).get("replies") or []
+    except Exception as exc:
+        print(f"[WARN] B站评论采集跳过 ({aid}): {exc}")
+        return
+    for reply in replies[:limit]:
+        reply_id = str(reply.get("rpid_str") or reply.get("rpid") or "").strip()
+        content = (reply.get("content") or {}).get("message") or ""
+        if not reply_id or not content.strip():
+            continue
+        likes = reply.get("like")
+        save_comment(conn, {
+            "channel": "B站",
+            "comment_id": reply_id,
+            "parent_url": parent_url,
+            "content": content,
+            "author_or_app": (reply.get("member") or {}).get("uname", ""),
+            "commented_at": epoch_time(reply.get("ctime")),
+            "comment_time_source": "bilibili_reply_ctime",
+            "source_metric": f"{likes} 赞" if type(likes) is int and likes >= 0 else "",
+        })
 
 
 def collect_bilibili(conn: sqlite3.Connection, custom_queries: Optional[List[Tuple[str, str]]] = None) -> int:
@@ -268,37 +364,23 @@ def collect_bilibili(conn: sqlite3.Connection, custom_queries: Optional[List[Tup
             raw = opener.open(url, timeout=10).read().decode("utf-8", errors="ignore")
             res = json.loads(raw)
             items = res.get("data", {}).get("result", []) or []
-            for item in items[:4]:
+            candidates = ((item, epoch_time(item.get("pubdate"))) for item in items)
+            for item, published in newest_results(candidates, 4):
                 title = strip_html(item.get("title", ""))
                 desc = strip_html(item.get("description", ""))
                 play = int(item.get("play") or 0)
                 fav = int(item.get("favorites") or 0)
                 danmaku = int(item.get("video_review") or 0)
                 author = item.get("author", "")
-                pub_ts = int(item.get("pubdate") or 0)
-                pub_dt = datetime.datetime.fromtimestamp(pub_ts).strftime("%Y-%m-%d") if pub_ts > 0 else now_str()[:10]
-                if pub_ts > 0 and (datetime.date.today() - datetime.date.fromisoformat(pub_dt)).days > 180:
+                pub_dt = source_day(published)
+                if pub_dt and (market_today() - datetime.date.fromisoformat(pub_dt)).days > 180:
                     continue
                 bvid = item.get("bvid", "")
+                if not bvid:
+                    continue
                 aid = item.get("aid")
                 fav_ratio = round((fav / play * 100), 1) if play > 0 else 0.0
-
-                top_comment = ""
-                if aid:
-                    try:
-                        rep_url = f"https://api.bilibili.com/x/v2/reply?type=1&oid={aid}&sort=1&ps=5"
-                        rep_raw = opener.open(rep_url, timeout=6).read().decode("utf-8", errors="ignore")
-                        rep_json = json.loads(rep_raw)
-                        replies = rep_json.get("data", {}).get("replies") or []
-                        if replies:
-                            c_msg = strip_html(replies[0].get("content", {}).get("message", ""))
-                            c_like = replies[0].get("like", 0)
-                            if c_msg:
-                                top_comment = f" | 热门评论({c_like}赞): “{c_msg[:90]}”"
-                    except Exception:
-                        pass
-
-                full_content = f"视频简介: {desc[:160] if desc else '无'}{top_comment}"
+                video_url = f"https://www.bilibili.com/video/{bvid}"
                 ok = insert_signal(
                     conn=conn,
                     channel="B站视频与评论(实时API)",
@@ -306,16 +388,19 @@ def collect_bilibili(conn: sqlite3.Connection, custom_queries: Optional[List[Tup
                     category=category,
                     query_term=term,
                     title=title,
-                    content=full_content,
+                    content=f"视频简介: {desc[:160] if desc else '无'}",
                     author_or_app=f"UP主: {author}",
                     metric_primary=f"{play} 播放 / {fav} 收藏",
                     metric_secondary=f"收藏率 {fav_ratio}% / {danmaku} 弹幕",
                     rating_or_price="高收藏干货" if fav_ratio >= 5.0 else "常规视频",
-                    source_url=f"https://www.bilibili.com/video/{bvid}",
+                    source_url=video_url,
                     published_at=pub_dt,
+                    source_published_at=published,
+                    published_time_source="bilibili_video_pubdate",
                 )
                 if ok:
                     added += 1
+                collect_bilibili_replies(conn, opener, aid, video_url)
         except Exception as exc:
             print(f"[WARN] B站采集异常 ({term}): {exc}")
     conn.commit()
@@ -338,13 +423,16 @@ def collect_wechat_sogou(conn: sqlite3.Connection, custom_queries: Optional[List
             with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as resp:
                 page = resp.read().decode("utf-8", errors="ignore")
             blocks = re.findall(r'<div class="txt-box">(.*?)</div>\s*</div>', page, re.S)
-            for blk in blocks[:3]:
+            candidates = []
+            for blk in blocks:
+                ts_match = re.search(r"timeConvert\('(\d+)'\)", blk)
+                candidates.append((blk, epoch_time(ts_match.group(1)) if ts_match else ""))
+            for blk, published in newest_results(candidates, 3):
                 t_match = re.search(r"<h3[^>]*>\s*<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>\s*</h3>", blk, re.S)
                 p_match = re.search(r'<p class="txt-info"[^>]*>(.*?)</p>', blk, re.S)
                 a_match = re.search(r'<span class="all-time-y2">(.*?)</span>', blk, re.S)
-                ts_match = re.search(r"timeConvert\('(\d+)'\)", blk)
-                pub_dt = datetime.datetime.fromtimestamp(int(ts_match.group(1))).strftime("%Y-%m-%d") if ts_match else now_str()[:10]
-                if ts_match and (datetime.date.today() - datetime.date.fromisoformat(pub_dt)).days > 180:
+                pub_dt = source_day(published)
+                if pub_dt and (market_today() - datetime.date.fromisoformat(pub_dt)).days > 180:
                     continue
                 if not t_match:
                     continue
@@ -368,6 +456,8 @@ def collect_wechat_sogou(conn: sqlite3.Connection, custom_queries: Optional[List
                     rating_or_price="行业一线案例",
                     source_url=href,
                     published_at=pub_dt,
+                    source_published_at=published,
+                    published_time_source="sogou_article_time",
                 )
                 if ok:
                     added += 1
@@ -378,7 +468,7 @@ def collect_wechat_sogou(conn: sqlite3.Connection, custom_queries: Optional[List
 
 
 def ingest_inbox_csv(conn: sqlite3.Connection, inbox_dir: pathlib.Path = INBOX_DIR) -> int:
-    """导入本地 inbox/ 目录下的蝉妈妈、闲鱼、小红书导出 CSV"""
+    """导入既有信号表和显式标记为 comment 的评论行。"""
     added = 0
     if not inbox_dir.exists():
         return 0
@@ -387,6 +477,13 @@ def ingest_inbox_csv(conn: sqlite3.Connection, inbox_dir: pathlib.Path = INBOX_D
             with csv_file.open("r", encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
+                    if (row.get("record_type") or "").strip().lower() == "comment":
+                        try:
+                            row["comment_time_source"] = row.get("comment_time_source") or csv_file.name
+                            added += save_comment(conn, row)
+                        except ValueError as exc:
+                            print(f"[WARN] 跳过评论 ({csv_file.name}:{reader.line_num}): {exc}")
+                        continue
                     ok = insert_signal(
                         conn=conn,
                         channel=row.get("channel", "本地CSV导入"),
@@ -532,7 +629,7 @@ def evaluate_opportunities(conn: sqlite3.Connection) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Market Radar CLI (多渠道采集 + AI锐评评估 + 团队人脉提报)")
-    parser.add_argument("action", choices=["run-all", "collect", "clean", "evaluate", "export", "submit-idea"], default="run-all", nargs="?")
+    parser.add_argument("action", choices=["run-all", "collect", "import-csv", "clean", "evaluate", "export", "submit-idea"], default="run-all", nargs="?")
     parser.add_argument("--title", default="", help="人脉新方向标题")
     parser.add_argument("--proposer", default="团队成员", help="提报人姓名/人脉来源")
     parser.add_argument("--what", default="", help="一句话说明具体做什么产品")
@@ -541,12 +638,17 @@ def main() -> None:
     parser.add_argument("--channel", default="人脉私域+小红书/闲鱼", help="首批客户获客渠道")
     parser.add_argument("--mvp-days", type=int, default=7, help="预计最小可用产品研发天数")
     parser.add_argument("--unpaid", action="store_true", help="若仅有口头意向尚无付费验证则加上此参数")
+    parser.add_argument("--with-comments", action="store_true", help="本地导出信号、评论和标签到 .market-radar")
     args = parser.parse_args()
+    if args.with_comments and args.action != "export":
+        parser.error("--with-comments 仅适用于 export")
 
     conn = get_conn()
     init_db(conn)
     from collab_utils import sync_db_from_jsonl, dump_db_to_jsonl, submit_custom_idea
+    from user_comments import archive_comments, restore_comments
     sync_db_from_jsonl(conn, BASE_WORKSPACE, insert_signal)
+    restore_comments(conn, BASE_WORKSPACE)
 
     if args.action == "submit-idea":
         if not args.title or not args.what:
@@ -569,16 +671,27 @@ def main() -> None:
         print(f"[EXPORT] 看板已自动刷新: {HTML_PATH}")
         return
 
+    if args.action == "import-csv":
+        c_csv = ingest_inbox_csv(conn)
+        archive_comments(conn, BASE_WORKSPACE)
+        clean_and_tag_signals(conn)
+        dump_db_to_jsonl(conn, BASE_WORKSPACE)
+        print(f"[IMPORT-CSV] 新增信号与评论: {c_csv}")
+        return
+
     if args.action in ("run-all", "collect"):
         c_csv = ingest_inbox_csv(conn)
         c_app = collect_appstore(conn)
         c_bili = collect_bilibili(conn)
         c_wx = collect_wechat_sogou(conn)
-        print(f"[COLLECT] 新增信号: 本地导表={c_csv}, AppStore差评={c_app}, B站视频与评论={c_bili}, 微信公众号={c_wx}")
+        if args.action == "collect":
+            archive_comments(conn, BASE_WORKSPACE)
+        print(f"[COLLECT] 本地导表={c_csv}, 新增主记录: AppStore应用={c_app}, B站视频={c_bili}, 微信公众号={c_wx}")
 
     if args.action in ("run-all", "clean"):
         stats = clean_and_tag_signals(conn)
         dump_db_to_jsonl(conn, BASE_WORKSPACE)
+        archive_comments(conn, BASE_WORKSPACE)
         print(f"[CLEAN & ARCHIVE] 信号清洗与历史归档完成: 总计={stats['total']}, 有效={stats['valid']}, 拦截噪音={stats['noise']}")
 
     if args.action in ("run-all", "evaluate"):
@@ -587,8 +700,10 @@ def main() -> None:
 
     if args.action in ("run-all", "export"):
         from export_dashboard import export_all
-        export_all(conn, BASE_WORKSPACE)
-        print(f"[EXPORT] 交互式看板已生成: {HTML_PATH}")
+        page = export_all(conn, BASE_WORKSPACE, with_comments=args.with_comments)
+        print(f"[EXPORT] 交互式看板已生成: {page}")
+        if args.with_comments:
+            print(f"[EXPORT] 本地 CSV: {page.parent / 'exports/signals_full.csv'}")
 
 
 if __name__ == "__main__":

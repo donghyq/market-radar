@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import radar_cli
-from collab_utils import dump_db_to_jsonl, sync_db_from_jsonl
+from collab_utils import dump_db_to_jsonl, restore_signal, sync_db_from_jsonl
 from export_dashboard import export_all, render_page
 from persona_and_freshness import ensure_columns, enrich_all_signals
 
@@ -81,22 +81,8 @@ def pull_and_merge_remote_data(remote_map: dict):
             if not ln.strip():
                 continue
             r = json.loads(ln)
-            if radar_cli.insert_signal(
-                conn=conn,
-                channel=r.get("channel", ""),
-                source_tier=r.get("source_tier", "远端合并"),
-                category=r.get("category", ""),
-                query_term=r.get("query_term", ""),
-                title=r.get("title", ""),
-                content=r.get("content", ""),
-                author_or_app=r.get("author_or_app", ""),
-                metric_primary=r.get("metric_primary", ""),
-                metric_secondary=r.get("metric_secondary", ""),
-                rating_or_price=r.get("rating_or_price", ""),
-                source_url=r.get("source_url", ""),
-                published_at=r.get("published_at", ""),
-                collected_at=r.get("collected_at", ""),
-            ):
+            r.setdefault("source_tier", "远端合并")
+            if restore_signal(conn, r, radar_cli.insert_signal):
                 merged_new += 1
         conn.commit()
 

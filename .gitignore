@@ -4,3 +4,5 @@ __pycache__/
 *.db
 *.db-journal
 .browser_profile/
+.market-radar/
+inbox/comments_*.csv

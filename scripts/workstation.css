@@ -118,6 +118,9 @@
 .signal-controls output, .source-link { color: var(--text-muted); font-size: 12px; }
 .source-link { display: inline-block; margin-top: 5px; }
 #tab-signals table { min-width: 790px; }
+#tab-signals .signal-time { width: 280px; min-width: 280px; white-space: nowrap; }
+#tab-signals td.signal-time { font-family: var(--mono); color: var(--text-muted); }
+#tab-signals .signal-time small { font-size: 10.5px; }
 #tab-signals td:nth-child(4) { overflow-wrap: anywhere; }
 .modal-mask { position: fixed; inset: 0; border: 0; margin: auto; color: var(--text); background: transparent; width: min(100%, 760px); max-height: 100%; max-width: 100%; }
 .modal-mask[open] { display: block; }
@@ -322,6 +325,15 @@ body { background: radial-gradient(ellipse at 52% -25%, #1c304a 0%, var(--bg) 46
 }
 
 /* Freshness & Persona Analytics */
+.timeline-layer + .timeline-layer { margin-top: 18px; }
+.timeline-layer h3 { margin: 0 0 10px; font-size: 13px; color: var(--text-secondary); }
+.timeline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 135px), 1fr)); gap: 12px; }
+.timeline-count { font: 700 26px/1.3 var(--mono); color: var(--text); }
+.timeline-count small { font-size: 12px; font-weight: 400; color: var(--text-muted); }
+.timeline-grid [data-window="24h"] { border-left: 3px solid var(--accent); }
+.timeline-grid [data-window="30d_active"] { border-left: 3px solid #3b82f6; }
+.timeline-grid [data-window="stale_archive"] { border-left: 3px solid #ef4444; }
+.timeline-grid [data-window="stale_archive"] .timeline-count { color: #fca5a5; }
 .fresh-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10.5px; font-weight: 600; font-family: var(--mono); }
 .fresh-7d { background: rgba(45, 212, 191, 0.16); color: var(--accent); border: 1px solid rgba(45, 212, 191, 0.35); }
 .fresh-30d { background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.35); }
@@ -331,7 +343,6 @@ body { background: radial-gradient(ellipse at 52% -25%, #1c304a 0%, var(--bg) 46
 .persona-bar-bg { width: 100%; height: 6px; background: #1a2636; border-radius: 4px; overflow: hidden; margin-top: 6px; display: flex; }
 .persona-bar-fresh { background: var(--accent); height: 100%; }
 .persona-bar-old { background: #475569; height: 100%; }
-.timeline-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
 
 /* Team Strategy Blueprint */
 .blueprint-hero {

@@ -331,7 +331,7 @@ function renderLinkedEvidence(p) {
   const kinds = new Set(active.map(s => s.channel).filter(Boolean));
   const rows = evidence.map(s => `
     <button type="button" class="evidence-item" onclick="openSnap(${Number(s.id)})">
-      <span class="evidence-meta">#${Number(s.id)} · 发布 ${esc(s.published_at || (s.collected_at||'').slice(0,10))}${s.freshness_tier === 'stale_archive' ? ' (超半年旧帖)' : ''} · ${esc(s.audience_tag || evidenceKind(s))}</span>
+      <span class="evidence-meta">#${Number(s.id)} · 时间 ${esc(signalPublishedText(s))}${signalTiming(s).tier === 'stale_archive' ? ' (超半年旧帖)' : ''} · ${esc(s.audience_tag || evidenceKind(s))}</span>
       <strong>${esc(s.title)}</strong>
       <small>${[s.author_or_app, s.metric_primary].filter(Boolean).map(esc).join(' · ')}</small>
       <span class="evidence-arrow" aria-hidden="true">↗</span>

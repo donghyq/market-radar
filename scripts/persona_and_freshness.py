@@ -16,6 +16,8 @@ import ssl
 import urllib.request
 from typing import Any, Dict, List, Tuple
 
+from signal_time import LEGACY_DATE_SOURCE, TIME_COLUMNS, market_today, source_day
+
 SSL_CTX = ssl._create_unverified_context()
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
@@ -99,7 +101,7 @@ def compute_freshness(pub_date_str: str, ref_date: datetime.date) -> Tuple[str, 
         pub_d = datetime.date.fromisoformat(pub_date_str[:10])
         age = (ref_date - pub_d).days
         if age < 0:
-            age = 0
+            return "recent_unverified", -1, False
         if age <= 7:
             return "7d_hot", age, False
         if age <= 30:
@@ -116,14 +118,16 @@ def compute_freshness(pub_date_str: str, ref_date: datetime.date) -> Tuple[str, 
 def ensure_columns(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     existing = {r[1] for r in cur.execute("PRAGMA table_info(raw_signals)").fetchall()}
-    for col, default in [
-        ("published_at", "''"),
-        ("freshness_tier", "'30d_active'"),
-        ("audience_tag", "''"),
-        ("persona_note", "''"),
-    ]:
+    defaults = {
+        "published_at": "",
+        "freshness_tier": "30d_active",
+        "audience_tag": "",
+        "persona_note": "",
+        **TIME_COLUMNS,
+    }
+    for col, default in defaults.items():
         if col not in existing:
-            cur.execute(f"ALTER TABLE raw_signals ADD COLUMN {col} TEXT DEFAULT {default}")
+            cur.execute(f"ALTER TABLE raw_signals ADD COLUMN {col} TEXT DEFAULT '{default}'")
     conn.commit()
 
 
@@ -182,20 +186,22 @@ def backfill_real_publish_dates(conn: sqlite3.Connection) -> int:
 
 def enrich_all_signals(conn: sqlite3.Connection, ref_date_str: str = "") -> Dict[str, Any]:
     ensure_columns(conn)
-    ref_date = datetime.date.fromisoformat(ref_date_str) if ref_date_str else datetime.date.today()
+    ref_date = datetime.date.fromisoformat(ref_date_str) if ref_date_str else market_today()
     rows = conn.execute("SELECT * FROM raw_signals").fetchall()
 
     fresh_counts = {"7d_hot": 0, "30d_active": 0, "90d_recent": 0, "180d_halfyear": 0, "stale_archive": 0, "recent_unverified": 0}
     aud_stats: Dict[str, Dict[str, Any]] = {}
 
     for r in rows:
-        pub = (r["published_at"] or r["collected_at"] or "")[:10]
-        f_tier, age_days, is_stale = compute_freshness(pub, ref_date)
+        published = r["source_published_at"]
+        if not published and r["published_time_source"] == LEGACY_DATE_SOURCE:
+            published = r["published_at"]
+        f_tier, _, is_stale = compute_freshness(source_day(published), ref_date)
         seg, p_note = classify_audience(r["channel"], r["category"], r["query_term"], r["title"], r["content"])
 
         conn.execute(
-            "UPDATE raw_signals SET published_at=?, freshness_tier=?, audience_tag=?, persona_note=? WHERE id=?",
-            (pub, f_tier, seg, p_note, r["id"]),
+            "UPDATE raw_signals SET freshness_tier=?, audience_tag=?, persona_note=? WHERE id=?",
+            (f_tier, seg, p_note, r["id"]),
         )
 
         if not r["is_noise"]:

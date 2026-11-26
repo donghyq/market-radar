@@ -21,6 +21,7 @@ from typing import Any, Dict, List
 
 import radar_cli
 from collab_utils import dump_db_to_jsonl, sync_db_from_jsonl
+from signal_time import epoch_time
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 SSL_CTX = ssl._create_unverified_context()
@@ -65,6 +66,8 @@ def collect_dynamic_breakouts(conn: sqlite3.Connection) -> int:
                     metric_secondary=f"Fork率 {fk_ratio}%",
                     rating_or_price="开源新趋势",
                     source_url=it.get("html_url", f"https://github.com/{fn}"),
+                    source_published_at=it.get("created_at", "") or "",
+                    published_time_source="github_repository_created",
                 )
                 if ok:
                     added += 1
@@ -107,6 +110,8 @@ def collect_dynamic_breakouts(conn: sqlite3.Connection) -> int:
                     metric_secondary=f"收藏率 {fav_ratio}%",
                     rating_or_price="高热度桌宠/独游" if play >= 30000 else "独游实操",
                     source_url=f"https://www.bilibili.com/video/{bvid}",
+                    source_published_at=epoch_time(item.get("pubdate")),
+                    published_time_source="bilibili_video_pubdate",
                 )
                 if ok:
                     added += 1

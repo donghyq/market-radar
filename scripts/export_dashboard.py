@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import csv
 import datetime
 import json
 import pathlib
 import shutil
-import sqlite3
+
+from collab_utils import atomic_text, sync_db_from_jsonl
+from comment_profiles import PROFILE_FIELDS, label_comment
+from user_comments import COMMENT_ARCHIVE, load_comments, restore_comments
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "radar.db"
-OUT_HTML = BASE_DIR / "index.html"
-DOCS_HTML = BASE_DIR / "docs" / "index.html"
 CFG_PATH = pathlib.Path(__file__).resolve().parent / "dashboard_config.json"
 WP_PATH = pathlib.Path(__file__).resolve().parent / "whitepaper_config.json"
 TPL_PATH = pathlib.Path(__file__).resolve().parent / "template.html"
@@ -26,12 +27,74 @@ def render_page(bundle):
     return page.replace("__RADAR_DATA_JSON__", data)
 
 
-def export_all(conn=None, base_dir=BASE_DIR):
-    close_conn = False
+def comment_signals(conn):
+    """Project comments onto the existing signal view without changing any stored signal ID."""
+    rows = []
+    for index, comment in enumerate(load_comments(conn), 1):
+        labels = label_comment(comment)
+        rows.append({
+            "id": -index,
+            "record_type": "comment",
+            "title": "用户评论",
+            "category": "用户评论",
+            "channel": comment["channel"],
+            "comment_id": comment["comment_id"],
+            "parent_url": comment["parent_url"],
+            "source_url": comment["source_url"],
+            "content": comment["content"],
+            "author_or_app": comment["author_or_app"],
+            "author_profile_url": comment["author_profile_url"],
+            "metric_primary": comment["source_metric"],
+            "source_published_at": comment["commented_at"],
+            "published_time_precision": comment["comment_time_precision"],
+            "published_time_source": comment["comment_time_source"],
+            "observed_at": comment["observed_at"],
+            "is_noise": 0,
+            **labels,
+        })
+    return rows
+
+
+def write_local_csv(path, signals):
+    base_fields = (
+        "id", "published_at", "freshness_tier", "audience_tag", "channel", "source_tier",
+        "category", "query_term", "author_or_app", "title", "content", "metric_primary",
+        "metric_secondary", "rating_or_price", "pain_tags", "is_noise", "collected_at", "source_url",
+        "record_type", "comment_id", "parent_url", "source_published_at", "published_time_precision",
+        "published_time_source", "observed_at", "stance", "intents",
+    )
+    tag_columns = {field: "age_band" if field == "age" else field for field in PROFILE_FIELDS}
+    fields = [*base_fields, *(column for name in tag_columns.values() for column in (name, name + "_source"))]
+    with atomic_text(path, encoding="utf-8-sig") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        for signal in signals:
+            row = {field: signal.get(field, "") for field in base_fields}
+            row["record_type"] = row["record_type"] or "signal"
+            row["intents"] = "、".join(signal.get("intents", ()))
+            for field, field_name in tag_columns.items():
+                tag = signal.get("profile_tags", {}).get(field, {})
+                row[field_name] = tag.get("value", "")
+                row[field_name + "_source"] = tag.get("source", "")
+            writer.writerow({
+                key: "'" + val if isinstance(val, str) and val.lstrip().startswith(("=", "+", "-", "@")) else val
+                for key, val in row.items()
+            })
+
+
+def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
     if conn is None:
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
-        close_conn = True
+        import radar_cli
+
+        conn = radar_cli.get_conn(base_dir / "radar.db")
+        try:
+            radar_cli.init_db(conn)
+            sync_db_from_jsonl(conn, base_dir, radar_cli.insert_signal)
+            if with_comments:
+                restore_comments(conn, base_dir)
+            return export_all(conn, base_dir, with_comments=with_comments)
+        finally:
+            conn.close()
 
     signals = [dict(r) for r in conn.execute("SELECT * FROM raw_signals ORDER BY is_noise ASC, id ASC").fetchall()]
     cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
@@ -75,14 +138,29 @@ def export_all(conn=None, base_dir=BASE_DIR):
         "archives": archives,
     }
 
-    page = render_page(bundle)
-    OUT_HTML.write_text(page, encoding="utf-8")
-    DOCS_HTML.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(OUT_HTML, DOCS_HTML)
+    if with_comments:
+        comments = comment_signals(conn)
+        bundle["comment_coverage"] = {
+            "total": len(comments),
+            "counts": {
+                name: sum(bool(row["profile_tags"][name]["source"]) for row in comments)
+                for name in PROFILE_FIELDS
+            },
+        }
+        signals.extend(comments)
+        local_dir = base_dir / COMMENT_ARCHIVE.parent
+        write_local_csv(local_dir / "exports/signals_full.csv", signals)
+        out = local_dir / "index.html"
+        with atomic_text(out) as stream:
+            stream.write(render_page(bundle))
+        return out
 
-    if close_conn:
-        conn.close()
-    return OUT_HTML
+    out = base_dir / "index.html"
+    docs = base_dir / "docs/index.html"
+    out.write_text(render_page(bundle), encoding="utf-8")
+    docs.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(out, docs)
+    return out
 
 
 if __name__ == "__main__":
