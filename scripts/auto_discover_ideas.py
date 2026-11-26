@@ -151,7 +151,7 @@ def synthesize_emergent_ideas(conn: sqlite3.Connection, base_dir: pathlib.Path) 
 
     # 查找近 14 天新开源项目飙升仓中尚未立项且 Stars >= 800 的高潜信号
     rows = conn.execute(
-        "SELECT * FROM raw_signals WHERE is_noise=0 AND category='近期高星开源项目' AND author_or_app NOT LIKE '%awesome%' AND content NOT LIKE '%MobileGestalt%' AND content NOT LIKE '%Grand Theft Auto%' AND content NOT LIKE '%GTA%' AND content NOT LIKE '%Xbox%' AND content NOT LIKE '%Switch games%' ORDER BY id DESC"
+        "SELECT * FROM raw_signals WHERE is_noise=0 AND category='近期高星开源项目' AND author_or_app NOT LIKE '%awesome%'  ORDER BY id DESC"
     ).fetchall()
 
     created = 0
