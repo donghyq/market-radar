@@ -75,7 +75,7 @@ function readReports() {
 }
 
 function shortTitle(p) {
-  if (p.code?.startsWith('RADAR-')) return cleanText(p.title).replace('[自动发现候选] 基于近期飙升开源项目 ', '新物种候选 · ').replace(' 的本土化工具/服务封装', '');
+  if (p.code?.startsWith('RADAR-')) return cleanText(p.title).replace('[自动发现候选] 基于近期飙升开源项目 ', '开源候选 · ').replace(' 的本土化工具/服务封装', '');
   return SHORT_TITLES[p.code] || cleanText(p.title).replace(/^(?:【[^】]+】|项目\s*\d+[：:])\s*/, '');
 }
 

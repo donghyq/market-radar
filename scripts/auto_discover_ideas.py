@@ -3,7 +3,7 @@
 """
 动态增量发现与自动候选立项生成器 (Auto Opportunity Synthesizer)
 解决『每天只更新底层信号、看板立项列表却不自动长出新方向』的断层：
-1. 动态时间窗扫描：抓取 GitHub 过去 14 天内刚诞生且 Star/Fork 飙升的全新物种（不预设死关键词），以及独立游戏/桌面挂机/AI硬件等增量信号；
+1. 动态时间窗扫描：抓取 GitHub 过去 14 天内刚诞生且 Star/Fork 飙升的全新开源项目（不预设死关键词），以及独立游戏/桌面挂机/AI硬件等增量信号；
 2. 自动立项合成：扫描信号库中尚未被现有项目引用的高热度信号（如高收藏率 >6%、高 Fork 率 >10%、高播放或强痛点），自动生成新的候选立项 JSON 写入 data/ideas/AUTO-NEW-*.json（限制每次最多新增 2 个最显著方向，防止看板泛滥）。
 """
 
@@ -29,14 +29,14 @@ UA = radar_cli.USER_AGENT
 
 
 def collect_dynamic_breakouts(conn: sqlite3.Connection) -> int:
-    """抓取过去 14 天内新诞生且快速蹿红的 GitHub 新物种（不锁死固定词）+ Steam 桌宠/独立游戏真实信号"""
+    """抓取过去 14 天内新诞生且快速蹿红的 GitHub 新开源项目（不锁死固定词）+ Steam 桌宠/独立游戏真实信号"""
     added = 0
     since_14d = (datetime.date.today() - datetime.timedelta(days=14)).strftime("%Y-%m-%d")
     headers = {"User-Agent": UA, "Accept": "application/vnd.github.v3+json"}
 
     # 1. GitHub 过去 14 天全新飙升项目（发现未知新方向的核心源头）
     gh_queries = [
-        ("全球新物种飙升", f"created:>{since_14d} stars:>180"),
+        ("近期高星开源项目", f"created:>{since_14d} stars:>180"),
         ("独立游戏与桌面宠物", "godot OR desktop-pet OR idle-game stars:>300 pushed:>" + since_14d),
     ]
     for cat, q in gh_queries:
@@ -55,7 +55,7 @@ def collect_dynamic_breakouts(conn: sqlite3.Connection) -> int:
                 desc = radar_cli.strip_html(it.get("description") or "近期快速飙升开源项目")
                 ok = radar_cli.insert_signal(
                     conn=conn,
-                    channel="GitHub新物种雷达(实时API)",
+                    channel="GitHub近期高星(实时API)",
                     source_tier="实时API抓取",
                     category=cat,
                     query_term=q[:40],
@@ -72,7 +72,7 @@ def collect_dynamic_breakouts(conn: sqlite3.Connection) -> int:
                 if ok:
                     added += 1
         except Exception as exc:
-            print(f"[WARN] GitHub 新物种扫描跳过 ({cat}): {exc}")
+            print(f"[WARN] GitHub 新开源项目扫描跳过 ({cat}): {exc}")
 
     # 2. 抓取独立游戏 / Steam 桌面挂机桌宠 / 微信小游戏变现与版号痛点
     cj = http.cookiejar.CookieJar()
@@ -149,9 +149,9 @@ def synthesize_emergent_ideas(conn: sqlite3.Connection, base_dir: pathlib.Path) 
         used_ids.update(obj.get("evidence_ids", []))
         existing_titles.add(obj.get("title", ""))
 
-    # 查找近 14 天新物种飙升仓中尚未立项且 Stars >= 800 的高潜信号
+    # 查找近 14 天新开源项目飙升仓中尚未立项且 Stars >= 800 的高潜信号
     rows = conn.execute(
-        "SELECT * FROM raw_signals WHERE is_noise=0 AND category='全球新物种飙升' AND author_or_app NOT LIKE '%awesome%' AND content NOT LIKE '%MobileGestalt%' ORDER BY id DESC"
+        "SELECT * FROM raw_signals WHERE is_noise=0 AND category='近期高星开源项目' AND author_or_app NOT LIKE '%awesome%' AND content NOT LIKE '%MobileGestalt%' AND content NOT LIKE '%Grand Theft Auto%' AND content NOT LIKE '%GTA%' AND content NOT LIKE '%Xbox%' AND content NOT LIKE '%Switch games%' ORDER BY id DESC"
     ).fetchall()
 
     created = 0
@@ -171,7 +171,7 @@ def synthesize_emergent_ideas(conn: sqlite3.Connection, base_dir: pathlib.Path) 
 
         cand_obj = {
             "code": cand_code,
-            "category_tag": "每日自动发现候选 · 近期飙升新物种",
+            "category_tag": "自动发现候选 · 近期高星开源项目",
             "title": f"[自动发现候选] 基于近期飙升开源项目 {short_repo} 的本土化工具/服务封装",
             "score": 81,
             "score_detail": "付费意愿 31/40 · 获客截流 20/25 · 研发交付 13/15 · 竞争缝隙 9/10 · 48h测款 8/10",
@@ -182,7 +182,7 @@ def synthesize_emergent_ideas(conn: sqlite3.Connection, base_dir: pathlib.Path) 
                 "【快速测款】在小红书/B站发布中文实机演示视频，测试评论区求安装包/代部署转化率",
             ],
             "who_pays_and_price": "国内对新工具敏感但不会配环境的创作者、运营或中小团队；建议定价 29.9~99 元买断或月卡。",
-            "ai_sharp_review": f"由每日自动新物种雷达捕获（{r['metric_primary']}，{r['metric_secondary']}）。海外刚爆火 1~2 周的新项目在国内通常存在 1~3 个月的信息差与使用门槛红利，建议研发花 30 分钟跑通 Demo 评估是否值得深挖。",
+            "ai_sharp_review": f"由 GitHub 近期高星扫描自动捕获（{r['metric_primary']}，{r['metric_secondary']}）。海外刚爆火 1~2 周的新项目在国内通常存在 1~3 个月的信息差与使用门槛红利，建议研发花 30 分钟跑通 Demo 评估是否值得深挖。",
             "plan_48h": f"克隆 {repo_name} 跑通 1 个中文案例录屏发小红书/B站，若 48 小时内收藏率 >5% 且超 30 人求一键包则转正式立项，否则归档淘汰。",
             "evidence_ids": [r["id"]],
             "compounding": {
@@ -201,7 +201,7 @@ def synthesize_emergent_ideas(conn: sqlite3.Connection, base_dir: pathlib.Path) 
         }
         cand_path.write_text(json.dumps(cand_obj, ensure_ascii=False, indent=2), encoding="utf-8")
         created += 1
-        if created >= 1:  # 每次最多自动推选 1 个最高星未审新物种进入候选池，保证工作台精炼不泛滥
+        if created >= 1:  # 每次最多自动推选 1 个最高星未审新开源项目进入候选池，保证工作台精炼不泛滥
             break
     return created
 
