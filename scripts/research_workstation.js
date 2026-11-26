@@ -28,7 +28,7 @@ function heroTitle(p) {
   return HERO_TITLES[p.code] || cleanText(p.title).replace(/^(?:【[^】]+】|项目\s*\d+[：:])\s*/, "");
 }
 const RESEARCH_QUESTIONS = {
-  'STRAT-02': '20 秒「会偷看你写代码并毒舌吐槽的桌面小鸭子」实机短视频，能否在 2 周内攒够 3,000 个 Steam 愿望单？',
+  'STRAT-02': '20 秒「陪你加班写代码、会暖心护短与蠢萌摔跤的桌面小鸭子」实机短视频，能否在 2 周内攒够 3,000 个 Steam 愿望单？',
   'STRAT-01': '手搓复刻玩家与高校实验室是否愿为「免配环境 Sim2Real 校准固件 + DeepSeek 情绪大脑」付费？',
   'AUTO-01': '带货创作者是否愿意为批量出图付费？',
   'PROJ-01': '收藏教程、遇到配置困难的人，是否愿意为成片付费？',

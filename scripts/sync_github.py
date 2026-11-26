@@ -139,7 +139,12 @@ def prepare_files(root, remote, include_code=False):
             content = path.read_bytes()
             if git_blob_sha(content) != remote.get(rel):
                 mode = "100755" if rel.endswith((".command", ".sh")) else "100644"
-                changed.append({"path": rel, "mode": mode, "type": "blob", "content": content.decode("utf-8")})
+                if len(content) > 400_000:
+                    import base64 as _b64
+                    b_sha = api("git/blobs", "POST", {"content": _b64.b64encode(content).decode("ascii"), "encoding": "base64"})["sha"]
+                    changed.append({"path": rel, "mode": mode, "type": "blob", "sha": b_sha})
+                else:
+                    changed.append({"path": rel, "mode": mode, "type": "blob", "content": content.decode("utf-8")})
     return changed
 
 

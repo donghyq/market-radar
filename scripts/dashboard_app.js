@@ -637,7 +637,7 @@ function renderRoadmapAndArchive() {
         <div class="stage-card blue">
           <span class="stage-kicker">STAGE 01 · 第 1 ~ 2 个月（纯软破局与攒粉）</span>
           <h4>Steam 桌面挂机游戏《AI 灵魂桌宠》</h4>
-          <p>零硬件库存起步。复用大肥鱼设定与 DeepSeek-V4.1-Flash 状态机，用 Godot 做驻留屏幕底部的透明陪伴小鸭子（感知工作窗口吐槽陪伴、换装养成）。交 100 美元押金免版号上架 Steam 全球收买断美金（$3.99 + 外观 DLC），快速跑通收入并沉淀数万名喜欢这只小鸭子的核心玩家社群。</p>
+          <p>零硬件库存起步。复用大肥鱼设定与 DeepSeek-V4.1-Flash 状态机，用 Godot 做驻留屏幕底部的透明陪伴小鸭子（感知工作状态暖心护短与蠢萌互动、换装养成）。交 100 美元押金免版号上架 Steam 全球收买断美金（$3.99 + 外观 DLC），快速跑通收入并沉淀数万名喜欢这只小鸭子的核心玩家社群。</p>
         </div>
         <div class="stage-card">
           <span class="stage-kicker">STAGE 02 · 第 2 ~ 5 个月（高毛利固件与高校采购）</span>
