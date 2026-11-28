@@ -11,13 +11,15 @@ from evidence.evidence_cache import signal_record
 from evidence.record_identity import comment_number
 from evidence.user_comments import COMMENT_ARCHIVE, assess_comments, load_comments, restore_comments
 from evidence_rules import PROFILE_FIELDS, default_rules
+from persona_and_freshness import enrich_signal_rows
+from signal_time import market_today
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 DASHBOARD_DIR = pathlib.Path(__file__).resolve().with_name("dashboard")
 CFG_PATH = DASHBOARD_DIR / "dashboard_config.json"
 WP_PATH = DASHBOARD_DIR / "whitepaper_config.json"
 TPL_PATH = DASHBOARD_DIR / "template.html"
-ASSESSMENT_FIELDS = ("rule_version", "evidence_status", "counts_as_demand", "matches", "is_noise", "noise_reason")
+ASSESSMENT_FIELDS = ("rule_version", "evidence_status", "counts_as_demand", "matches", "is_noise", "noise_reason", "market")
 
 
 def render_page(bundle):
@@ -85,7 +87,7 @@ def write_local_csv(path, signals):
         "published_time_source", "observed_at", "stance", "intents", "topic_tags",
         "thread_id", "reply_to_id", "author_id", "app_version", "source_updated_at",
         "rule_version", "evidence_status", "counts_as_demand",
-        "noise_reason", "matches",
+        "noise_reason", "matches", "market_segment", "market_role", "paid_evidence", "market_evidence",
     )
     tag_columns = {field: "age_band" if field == "age" else field for field in PROFILE_FIELDS}
     fields = [*base_fields, *(column for name in tag_columns.values() for column in (name, name + "_source"))]
@@ -98,6 +100,11 @@ def write_local_csv(path, signals):
             row["intents"] = "、".join(signal.get("intents", ()))
             row["topic_tags"] = "、".join(signal.get("topic_tags", ()))
             row["matches"] = json.dumps(signal.get("matches", []), ensure_ascii=False)
+            market = signal.get("market", {})
+            row["market_segment"] = market.get("segment", "")
+            row["market_role"] = market.get("role", "")
+            row["paid_evidence"] = market.get("paid_evidence", "")
+            row["market_evidence"] = json.dumps(market.get("facts", {}), ensure_ascii=False)
             for field, field_name in tag_columns.items():
                 tag = signal.get("profile_tags", {}).get(field, {})
                 row[field_name] = tag.get("value", "")
@@ -125,6 +132,13 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
     signals = [dict(r) for r in conn.execute("SELECT * FROM raw_signals ORDER BY is_noise ASC, id ASC").fetchall()]
     for signal in signals:
         signal.pop("origin_key", None)
+    rules = default_rules()
+    for row in signals:
+        result = rules.evaluate(signal_record(row))
+        fields = (*ASSESSMENT_FIELDS, "intents") if with_comments else ("market",)
+        row.update({field: result[field] for field in fields})
+        if with_comments:
+            row["pain_tags"] = ",".join(result["pain_tags"])
     cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
     wp = json.loads(WP_PATH.read_text(encoding="utf-8")) if WP_PATH.exists() else {}
 
@@ -151,8 +165,7 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
             except Exception:
                 pass
 
-    ps_path = base_dir / "data" / "persona_stats.json"
-    persona_stats = json.loads(ps_path.read_text(encoding="utf-8")) if ps_path.exists() else {}
+    persona_stats = enrich_signal_rows(signals, market_today())
     tr_path = base_dir / "data" / "tech_radar.json"
     tech_radar = json.loads(tr_path.read_text(encoding="utf-8")) if tr_path.exists() else {"items": []}
     bundle = {
@@ -164,14 +177,10 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
         "signals": signals,
         "whitepaper": wp,
         "archives": archives,
+        "consumer_market": True,
     }
 
     if with_comments:
-        rules = default_rules()
-        for row in signals:
-            result = rules.evaluate(signal_record(row))
-            row.update({field: result[field] for field in (*ASSESSMENT_FIELDS, "intents")})
-            row["pain_tags"] = ",".join(result["pain_tags"])
         comments = comment_signals(conn)
         conn.commit()
         bundle["comment_coverage"] = {

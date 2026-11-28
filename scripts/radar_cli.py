@@ -529,6 +529,8 @@ def ingest_inbox_csv(conn: sqlite3.Connection, inbox_dir: pathlib.Path = INBOX_D
                         metric_secondary=row.get("metric_secondary", ""),
                         rating_or_price=row.get("rating_or_price", ""),
                         source_url=row.get("source_url", ""),
+                        source_published_at=row.get("source_published_at") or "",
+                        published_time_source=row.get("published_time_source") or csv_file.name,
                     )
                     if ok:
                         added += 1
@@ -688,13 +690,13 @@ def main() -> None:
         return
 
     if args.action in ("run-all", "collect"):
+        from discovery_scanner import collect_discovery
+
         c_csv = ingest_inbox_csv(conn)
-        c_app = collect_appstore(conn)
-        c_bili = collect_bilibili(conn)
-        c_wx = collect_wechat_sogou(conn)
+        added = collect_discovery(conn)
         if args.action == "collect":
             archive_comments(conn, BASE_WORKSPACE)
-        print(f"[COLLECT] 本地导表={c_csv}, 新增主记录: AppStore应用={c_app}, B站视频={c_bili}, 微信公众号={c_wx}")
+        print(f"[COLLECT] 本地导表={c_csv}，各渠道新增信号: {added}")
 
     if args.action in ("run-all", "clean"):
         stats = clean_and_tag_signals(conn)

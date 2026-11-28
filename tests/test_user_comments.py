@@ -137,12 +137,17 @@ class UserCommentTest(unittest.TestCase):
         public = export_all(self.conn, self.root)
         local = export_all(self.conn, self.root, with_comments=True)
 
-        def records(path):
+        def bundle(path):
             text = path.read_text(encoding="utf-8")
-            return json.loads(text.split("const DATA = ", 1)[1].split(";\n</script>", 1)[0])["signals"]
+            return json.loads(text.split("const DATA = ", 1)[1].split(";\n</script>", 1)[0])
 
-        self.assertEqual([(r["display_id"], r["id"]) for r in records(public)], [("S1", 11837)])
-        self.assertEqual([(r["display_id"], r["id"]) for r in records(local)], [("S1", 11837), ("C1", source_id)])
+        self.assertEqual([(r["display_id"], r["id"]) for r in bundle(public)["signals"]], [("S1", 11837)])
+        local_bundle = bundle(local)
+        self.assertEqual([(r["display_id"], r["id"]) for r in local_bundle["signals"]], [("S1", 11837), ("C1", source_id)])
+        self.assertFalse((self.root / "data" / "persona_stats.json").exists())
+        personas = local_bundle["persona_stats"]["audience_personas"]
+        self.assertEqual([(row["audience"], row["total"]) for row in personas],
+                         [(local_bundle["signals"][0]["audience_tag"], 1)])
         with (local.parent / "exports/signals_full.csv").open(encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream)
             self.assertEqual(reader.fieldnames[0], "display_id")

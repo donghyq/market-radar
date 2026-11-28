@@ -157,6 +157,10 @@ class EvidenceRules:
                 platform_entries[platform].append(entry)
         self.platform_intents = {platform: self.compile_labels(entries) for platform, entries in platform_entries.items()}
         self.comment_topics = self.compile_labels(config.get("comment_topics", []))
+        market = config.get("consumer_market", {})
+        self.market_segments = self.compile_labels(market.get("segments", []))
+        self.market_roles = self.compile_labels(market.get("roles", []))
+        self.market_facts = {name: re.compile(pattern, re.I) for name, pattern in market.get("facts", {}).items()}
         self.profiles = {field: re.compile(pattern) for field, pattern in config["profiles"].items()}
         self.negative = re.compile(config["stance"]["negative"])
         self.positive = re.compile(config["stance"]["positive"])
@@ -218,7 +222,7 @@ class EvidenceRules:
             reply = linked_text(comments.get((key, str(record.get("reply_to_id") or ""))))
             related = repeats.get(self.repeat_key(record), {})
             other_urls = sorted({url for thread_id, url in related.items() if key != thread_id and url})[:3]
-            yield (thread, reply), tuple(other_urls), same_thread_author(record, post)
+            yield (thread, reply), tuple(other_urls), same_thread_author(record, post), post
 
     def labels(self, record, source_url):
         text = QUOTED_LINE.sub("", record.get("content") or "")
@@ -285,6 +289,58 @@ class EvidenceRules:
             return "unverified", [*matches.values(), *requests]
         return "", []
 
+    def market_evidence(self, record, text, parents, source_url, post):
+        if not self.market_segments:
+            return {}
+        matches = []
+        segment = ""
+        category = record.get("category") or ""
+        named_app = category.startswith("消费级虚拟产品") and platform_name(record) == "App Store"
+        catalog = record_kind(record) == "signal" and (record.get("source_tier") == "公开目录" or named_app)
+        if catalog:
+            segment = "virtual_service" if category == "消费级虚拟服务" else "virtual_product"
+        for subject, url, field in ((text, source_url, "text"),
+                                    *((parent, url, "thread") for parent, url in parents)):
+            if segment:
+                break
+            for name, _, pattern in self.market_segments:
+                if match := pattern.search(QUOTED_LINE.sub("", subject)):
+                    segment = name
+                    matches.append(match_details(f"market-{name}", match, field, url))
+                    break
+        if not segment and (category.startswith("消费级虚拟产品")
+                            or (post or {}).get("category", "").startswith("消费级虚拟产品")):
+            segment = "virtual_product"
+        if not segment and platform_name(record) in ("Steam", "Notion 模板"):
+            segment = "virtual_product"
+        if not segment:
+            return {}
+
+        role = "listing" if catalog else ""
+        for name, _, pattern in self.market_roles:
+            if role:
+                break
+            if match := pattern.search(text):
+                role = name
+                matches.append(match_details(f"market-{name}", match, "text", source_url))
+
+        facts = {}
+        for name, pattern in self.market_facts.items():
+            if match := pattern.search(text):
+                facts[name] = match[0]
+                matches.append(match_details(f"market-{name}", match, "text", source_url))
+        if catalog and record.get("rating_or_price"):
+            facts["asking_price"] = record["rating_or_price"]
+            matches.append({"rule_id": "market-asking_price", "field": "rating_or_price",
+                            "quote": record["rating_or_price"], "source_url": source_url})
+        if role in ("listing", "seller"):
+            for name in ("paid_price", "paid_report"):
+                facts.pop(name, None)
+            matches = [match for match in matches if match["rule_id"] not in ("market-paid_price", "market-paid_report")]
+        elif facts.get("paid_price") or facts.get("paid_report"):
+            role = "buyer_feedback"
+        return {"segment": segment, "role": role, "facts": facts, "matches": matches}
+
     def evaluate(self, record, context=((), (), False)):
         kind = record_kind(record)
         platform = platform_name(record)
@@ -322,8 +378,21 @@ class EvidenceRules:
                     demand_intents.append(label)
                 matches.append({**match_details(rule_id, match, field, source_url), "label": label, "label_kind": "intent"})
 
-        status, promotion_matches = self.promotion_status(text, source_url, *context)
+        status, promotion_matches = self.promotion_status(text, source_url, *context[:3])
         matches.extend(promotion_matches)
+        market = self.market_evidence(record, text, context[0], source_url, context[3] if len(context) > 3 else None)
+        consumer = market.get("segment") in ("virtual_product", "virtual_service")
+        facts = market.get("facts", {})
+        reported_payment = bool(facts.get("paid_price") or facts.get("paid_report"))
+        if consumer:
+            role = market["role"]
+            if role in ("seller", "listing") or metric == "公众号深度拆解":
+                demand_intents.clear()
+            elif (label := "已付费" if reported_payment else "买家需求" if role == "buyer_request" else ""):
+                if label not in intents:
+                    intents.append(label)
+                if label not in demand_intents:
+                    demand_intents.append(label)
         reason = ""
         tags = []
         if kind == "signal":
@@ -347,6 +416,17 @@ class EvidenceRules:
                     matches.append(match_details(rule_id, match, field, source_url))
         tags.extend(demand_intents)
         status = status or ("eligible" if demand_intents else "context")
+        if market:
+            independent = status == "eligible" and market["role"] not in ("listing", "seller")
+            paid = independent and consumer and reported_payment
+            turnaround = facts.get("turnaround", "")
+            duration = re.search(r"(\d+(?:\.\d+)?)\s*(分钟|小时|天)", turnaround)
+            hours = {"分钟": 1 / 60, "小时": 1, "天": 24}
+            quick = (float(duration[1]) * hours[duration[2]] <= 48 if duration
+                     else bool(turnaround))
+            market["paid_evidence"] = paid
+            market["priority"] = (1 + int(bool(facts.get("delivery")))
+                                  + int(quick)) if paid else 0
         if status == "promotional":
             reason = "明确推广线索"
         elif status == "unverified":
@@ -369,6 +449,7 @@ class EvidenceRules:
             "evidence_status": status, "counts_as_demand": status == "eligible",
             "is_noise": int(status in ("noise", "promotional")), "noise_reason": reason,
             "intents": intents, "pain_tags": tags or ["基础赛道线索"], "matches": [*matches, *label_matches],
+            "market": market,
             **labels,
         }
 

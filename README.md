@@ -90,7 +90,7 @@ market-radar/
 ├── rules/                            # 可整体迁移的证据规则、执行器与使用说明
 ├── scripts/
 │   ├── radar_cli.py                  # 主命令行入口（采集、清洗、人脉提报、评估、导出）
-│   ├── discovery_scanner.py          # 跨赛道广谱主动痛点发现脚本（6大付费人群×痛点词矩阵）
+│   ├── discovery_scanner.py          # 消费级虚拟产品与服务的公开渠道采集
 │   ├── auto_browser_collector.py     # Playwright 真机登录态复用 + XHR JSON 自动抓包器
 │   ├── collab_utils.py               # JSONL <-> SQLite 双向同步、历史归档与评分计算工具
 │   ├── export_dashboard.py           # 终端页面编译器（将 JSON 与 JS 内联打包为单文件 HTML）
@@ -108,7 +108,7 @@ market-radar/
 1. **历史基线恢复（`sync_db_from_jsonl`）**  
    每次执行命令时，先读取 `data/signals/signals_master.jsonl` 重建或合并至本地 `radar.db`，确保多人协作时老数据不丢失。
 2. **多源增量抓取（`collect` / `discovery_scanner.py` / `auto_browser_collector.py`）**  
-   依次拉取 App Store 1~3 星差评、B 站高收藏比视频与热门评论、搜狗微信实战拆解文章、V2EX 需求贴及 `inbox/*.csv`。利用 SQLite `UNIQUE(channel, title, author_or_app)` 约束自动忽略完全重复的数据。
+   默认采集 App Store 差评、Steam 与 Notion 的公开评价、京东公开服务目录及社区求助，搜词和来源在 `config/consumer_queries.json`。授权评论可用 `inbox/*.csv` 导入，评论行填写 `record_type=comment`、`channel`、`comment_id`、`parent_url` 和 `content`。
 3. **硬规则去噪与痛点打标（`clean_and_tag_signals`）**  
    - 长度 `< 15` 字符或命中营销导流正则（`免费领|扣111|加微|私信领|进群交流` 且无实质差评/销量指标）的记录标记 `is_noise = 1`，在终端中默认折叠并标注。
    - 根据正文与量化指标自动匹配标签：`付费意愿已验证`、`现有方案体验差/求平替`、`国内环境/使用门槛卡点`、`Token/算力成本高`、`B端交付与续费痛点`。
@@ -128,11 +128,13 @@ market-radar/
 python3 scripts/radar_cli.py run-all
 ```
 
-### 4.2 运行跨赛道广谱主动发现（挖掘未知新方向）
+### 4.2 采集虚拟产品和服务并导出本地信号与评论
 ```bash
 python3 scripts/discovery_scanner.py
-python3 scripts/export_dashboard.py
+python3 scripts/radar_cli.py export --with-comments
 ```
+
+打开 `.market-radar/index.html`，可筛选虚拟产品、虚拟服务、极客品类或全部记录。默认按付费依据排序，信号和评论分别限制极客占比。
 
 ### 4.3 蝉妈妈 / 闲鱼 / 小红书全自动 XHR 抓包（免手动导 CSV）
 ```bash

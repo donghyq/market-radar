@@ -52,6 +52,15 @@ def signal_origin(channel, source_url):
     if channel in ("小众软件论坛", "Appinn Forum") and host == "meta.appinn.net":
         if match := re.fullmatch(r"/t/(?:[^/]+/)?([0-9]+)", path):
             return "appinn:" + match[1]
+    catalogs = {
+        "Steam": ("store.steampowered.com", r"/app/([0-9]+)(?:/[^/]+)?", "steam"),
+        "Notion 模板": ("www.notion.com", r"/templates/([a-z0-9-]+)", "notion"),
+        "京东服务": ("item.jd.com", r"/([0-9]+)\.html", "jd"),
+    }
+    if channel in catalogs:
+        site, pattern, prefix = catalogs[channel]
+        if host == site and (match := re.fullmatch(pattern, path)):
+            return f"{prefix}:{match[1]}"
     return ""
 
 

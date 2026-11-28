@@ -20,6 +20,7 @@ python rules/engine.py input.jsonl --output output.jsonl
 - 输出按输入顺序保留 `schema_version`、`rule_version`、记录标识、来源字段、意图、标签、证据状态与 `matches`。每条命中记录规则 ID、来源和原文片段。评论的画像依据随 `profile_tags` 输出。
 - 评论可同时输出多项 `intents` 和 `topic_tags`。例如同步失败可标为「同步异常」和「同步与备份」。`matches` 中的 `label` 和 `label_kind` 将标签对应到原文与来源。本地看板支持按评论意图、主题筛选，CSV 导出包含这两列。
 - 用 `counts_as_demand` 筛出可用的需求证据记录。统计独立用户时可按平台和已知作者 ID 去重。`promotional` 表示明确推广，`unverified` 表示待复核，`context` 表示背景线索，`noise` 表示噪音。原文和来源随记录保留。
+- `market` 输出虚拟产品、虚拟服务或极客品类，以及商家发布、买家求助、购后反馈等角色。`facts` 保留标价、预算、实付自述和交付等原文，`matches` 保留相应的来源。目录信号可传入 `source_tier=公开目录`、`category` 和 `rating_or_price`。排序优先采用买家自述的付费依据，再结合交付物和交付时间。
 
 ## 维护
 

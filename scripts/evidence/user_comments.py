@@ -158,7 +158,7 @@ def assess_comments(conn, comments):
     if not comments:
         return []
     platforms = {platform_name(comment) for comment in comments}
-    rows = conn.execute("""SELECT id, channel, title, content, source_url, author_or_app
+    rows = conn.execute("""SELECT id, channel, category, title, content, source_url, author_or_app
         FROM raw_signals WHERE source_url <> '' ORDER BY id""")
     posts = [post for row in rows if platform_name(post := dict(row)) in platforms]
     return assess_records(conn, comments, posts=posts)

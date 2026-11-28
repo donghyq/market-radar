@@ -7,7 +7,8 @@ from evidence_rules import default_rules
 
 
 SIGNAL_RULE_FIELDS = ("id", "channel", "title", "content", "metric_primary", "source_url",
-                      "published_at", "source_published_at", "published_time_source")
+                      "published_at", "source_published_at", "published_time_source",
+                      "source_tier", "category", "rating_or_price")
 
 
 def signal_record(row):
@@ -32,6 +33,11 @@ def init_evidence_cache(conn):
           OR OLD.noise_reason IS NOT NEW.noise_reason OR OLD.pain_tags IS NOT NEW.pain_tags
         BEGIN DELETE FROM signal_rule_state WHERE signal_id=OLD.id; END""")
     conn.execute("""CREATE TRIGGER IF NOT EXISTS signal_rule_input_removed AFTER DELETE ON raw_signals
+        BEGIN DELETE FROM signal_rule_state WHERE signal_id=OLD.id; END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS signal_rule_market_input_changed
+        AFTER UPDATE OF source_tier, category, rating_or_price ON raw_signals
+        WHEN OLD.source_tier IS NOT NEW.source_tier OR OLD.category IS NOT NEW.category
+          OR OLD.rating_or_price IS NOT NEW.rating_or_price
         BEGIN DELETE FROM signal_rule_state WHERE signal_id=OLD.id; END""")
 
 

@@ -184,11 +184,8 @@ def backfill_real_publish_dates(conn: sqlite3.Connection) -> int:
     return updated
 
 
-def enrich_all_signals(conn: sqlite3.Connection, ref_date_str: str = "") -> Dict[str, Any]:
-    ensure_columns(conn)
-    ref_date = datetime.date.fromisoformat(ref_date_str) if ref_date_str else market_today()
-    rows = conn.execute("SELECT * FROM raw_signals").fetchall()
-
+def enrich_signal_rows(rows, ref_date: datetime.date) -> Dict[str, Any]:
+    """Annotate the supplied rows and summarize their valid signals."""
     fresh_counts = {"7d_hot": 0, "30d_active": 0, "90d_recent": 0, "180d_halfyear": 0, "stale_archive": 0, "recent_unverified": 0}
     aud_stats: Dict[str, Dict[str, Any]] = {}
 
@@ -199,10 +196,7 @@ def enrich_all_signals(conn: sqlite3.Connection, ref_date_str: str = "") -> Dict
         f_tier, _, is_stale = compute_freshness(source_day(published), ref_date)
         seg, p_note = classify_audience(r["channel"], r["category"], r["query_term"], r["title"], r["content"])
 
-        conn.execute(
-            "UPDATE raw_signals SET freshness_tier=?, audience_tag=?, persona_note=? WHERE id=?",
-            (f_tier, seg, p_note, r["id"]),
-        )
+        r.update(freshness_tier=f_tier, audience_tag=seg, persona_note=p_note)
 
         if not r["is_noise"]:
             fresh_counts[f_tier] = fresh_counts.get(f_tier, 0) + 1
@@ -223,10 +217,22 @@ def enrich_all_signals(conn: sqlite3.Connection, ref_date_str: str = "") -> Dict
             if is_stale:
                 aud_stats[seg]["stale_cnt"] += 1
 
-    conn.commit()
     sorted_aud = sorted(aud_stats.values(), key=lambda x: (x["fresh_30d"], x["total"]), reverse=True)
     return {
         "ref_date": ref_date.isoformat(),
         "freshness_breakdown": fresh_counts,
         "audience_personas": sorted_aud,
     }
+
+
+def enrich_all_signals(conn: sqlite3.Connection, ref_date_str: str = "") -> Dict[str, Any]:
+    ensure_columns(conn)
+    ref_date = datetime.date.fromisoformat(ref_date_str) if ref_date_str else market_today()
+    rows = [dict(row) for row in conn.execute("SELECT * FROM raw_signals")]
+    stats = enrich_signal_rows(rows, ref_date)
+    conn.executemany(
+        "UPDATE raw_signals SET freshness_tier=?, audience_tag=?, persona_note=? WHERE id=?",
+        ((r["freshness_tier"], r["audience_tag"], r["persona_note"], r["id"]) for r in rows),
+    )
+    conn.commit()
+    return stats

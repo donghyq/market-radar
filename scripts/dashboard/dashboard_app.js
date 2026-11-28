@@ -57,9 +57,11 @@ function jumpToAudienceSignals(audName) {
   if (sigBtn) switchTab("tab-signals", sigBtn);
   const audSel = document.getElementById("audSelect");
   const timeSel = document.getElementById("timeSelect");
+  const marketSel = document.getElementById("marketSelect");
   SIG_PAGE = 1;
   if (audSel) audSel.value = audName;
   if (timeSel) timeSel.value = "active180";
+  if (marketSel) marketSel.value = "all";
   const signalView = document.querySelector('#recordViews button[data-record-type="signal"]');
   if (signalView) selectRecordView(signalView);
   else filterRows();
@@ -338,16 +340,24 @@ function renderSignals() {
       <input id="qInput" style="max-width:260px;" aria-label="搜索展示编号、原文或标签" placeholder="搜索编号（S12 / C12）、原文或标签" oninput="SIG_PAGE=1;filterRows()">
       <select id="timeSelect" style="max-width:205px;" aria-label="按发布时效筛选" onchange="SIG_PAGE=1;filterRows()">
         <option value="24h">近 24 小时</option>
-        <option value="7d" selected>近 7 天</option>
+        <option value="7d" ${DATA.consumer_market ? '' : 'selected'}>近 7 天</option>
         <option value="30d">近 30 天</option>
         <option value="active180">近 180 天</option>
         <option value="stale_only">超过 180 天</option>
         <option value="unknown">时间待核实</option>
-        <option value="all_time">全部时间</option>
+        <option value="all_time" ${DATA.consumer_market ? 'selected' : ''}>全部时间</option>
       </select>
-      ${coverage ? `<select id="sortSelect" aria-label="排序方式" onchange="SIG_PAGE=1;filterRows()">
+      ${DATA.consumer_market ? `<select id="marketSelect" aria-label="市场范围" onchange="SIG_PAGE=1;filterRows()">
+        <option value="consumer">C 端虚拟产品与服务</option>
+        <option value="virtual_product">虚拟产品</option>
+        <option value="virtual_service">虚拟服务</option>
+        <option value="geek">极客品类</option>
+        <option value="all">全部品类</option>
+      </select>` : ''}
+      ${coverage || DATA.consumer_market ? `<select id="sortSelect" aria-label="排序方式" onchange="SIG_PAGE=1;filterRows()">
+        ${DATA.consumer_market ? '<option value="market" selected>有付费依据优先</option>' : ''}
         <option value="post">发帖时间优先</option>
-        <option value="comment" selected>新评时间优先</option>
+        ${coverage ? '<option value="comment"' + (DATA.consumer_market ? '' : ' selected') + '>新评时间优先</option>' : ''}
       </select>` : ''}
       <select id="audSelect" style="max-width:215px;" aria-label="按买单人群筛选" onchange="SIG_PAGE=1;filterRows()">
         <option value="">全部买单人群 (${allAuds.length}类)</option>
@@ -434,6 +444,7 @@ function renderSigPage() {
     const aud = s.audience_tag || '未分类人群';
     const title = signalExcerpt(s.title, 30);
     const summary = signalExcerpt(s.content, 200);
+    const market = MARKET_SEGMENTS[s.market?.segment];
     return `
       <tr class="sig-row">
         <td class="signal-time">
@@ -447,7 +458,7 @@ function renderSigPage() {
           <span class="aud-pill">${s.record_type === 'comment' ? '用户评论' : esc(aud)}</span>
         </td>
         <td><strong style="color:var(--text);font-weight:500;">${esc(s.author_or_app)}</strong><br><small style="color:var(--text-muted)">${esc(s.rating_or_price)}</small></td>
-        <td>${s.is_noise ? '<span class="pill" style="color:#f87171;">已过滤噪音</span> ' : ''}<strong style="color:var(--text);font-weight:500;">${esc(title)}</strong><br><span style="color:var(--text-secondary)">${esc(summary)}</span></td>
+        <td>${s.is_noise ? '<span class="pill" style="color:#f87171;">已过滤噪音</span> ' : ''}${market ? '<span class="pill">' + esc(market) + '</span> ' : ''}<strong style="color:var(--text);font-weight:500;">${esc(title)}</strong><br><span style="color:var(--text-secondary)">${esc(summary)}</span></td>
         <td style="color:var(--text-secondary);">${s.record_type === 'comment'
           ? [s.metric_primary, ...commentLabelLines(s), ...commentTagLines(s)].filter(Boolean).map(esc).join('<br>')
           : esc(s.metric_primary) + '<br><small style="color:var(--text-muted)">' + esc(s.metric_secondary) + '</small>'}</td>
@@ -812,12 +823,22 @@ function evidenceLink(source, caption) {
 const COMMENT_LABEL_NAMES = {age: '年龄段', ip_location: 'IP 属地', occupation: '职业', interests: '喜好'};
 const EVIDENCE_STATUS_NAMES = {eligible: '可计入独立需求证据', context: '背景线索',
   promotional: '推广线索', unverified: '待核实', noise: '噪音'};
+const MARKET_SEGMENTS = {virtual_product: '虚拟产品', virtual_service: '虚拟服务', geek: '极客品类'};
+const MARKET_ROLES = {listing: '平台目录', seller: '商家发布', buyer_request: '买家求助', buyer_feedback: '买家反馈'};
+const MARKET_FACTS = {asking_price: '公开标价', budget: '买家预算', paid_price: '买家自述实付', paid_report: '买家自述付费',
+  delivery: '交付物', turnaround: '交付时间', revisions: '修改次数', refund: '退款原因'};
+
+function marketLabelLines(market) {
+  if (!market?.segment) return [];
+  return [MARKET_ROLES[market.role], ...Object.entries(market.facts || {}).map(
+    ([key, value]) => MARKET_FACTS[key] + ' ' + value)].filter(Boolean);
+}
 
 function evidenceAssessment(s) {
   const status = EVIDENCE_STATUS_NAMES[s.evidence_status];
-  if (!status) return '';
-  const reasons = (s.matches || []).map(({rule_id, quote}) => `${rule_id}「${quote}」`);
-  return [`证据判定：${status}（规则 ${s.rule_version}）`, ...reasons].join('\n');
+  const reasons = (s.matches || []).map(({rule_id, quote}) => rule_id + '「' + quote + '」');
+  return [status && `证据判定：${status}（规则 ${s.rule_version}）`, ...marketLabelLines(s.market), ...reasons]
+    .filter(Boolean).join('\n');
 }
 
 function commentTagLines(s, includeSource = false) {
@@ -910,6 +931,10 @@ function openSnap(key) {
   } else link.removeAttribute('href');
   const hint = document.getElementById('mHint');
   hint.replaceChildren();
+  if (!isComment && !comments.length && (s.metric_secondary === '评论未获取'
+    || /^(闲鱼|小红书|蝉妈妈|抖音|淘宝)/.test(s.channel || ''))) {
+    hint.append('评论未获取');
+  }
   if (parent && parent.url !== source?.url) {
     hint.append(evidenceLink(parent, '原帖'));
   }
@@ -1027,7 +1052,16 @@ function switchTab(id, btn) {
 function signalMatches(s, query) {
   const tags = s.profile_tags ? commentTagLines(s).join(' ') : '';
   return [displayedId(s), s.title, s.content, s.author_or_app, s.audience_tag, tags,
-    ...commentLabelLines(s)].join(' ').toLowerCase().includes(query);
+    MARKET_SEGMENTS[s.market?.segment], ...marketLabelLines(s.market), ...commentLabelLines(s)].join(' ').toLowerCase().includes(query);
+}
+
+function capGeekRows(rows) {
+  const consumer = {signal: 0, comment: 0};
+  for (const {signal} of rows) {
+    if (signal.market?.segment !== 'geek') consumer[signal.record_type || 'signal']++;
+  }
+  const remaining = {signal: Math.floor(consumer.signal / 9), comment: Math.floor(consumer.comment / 9)};
+  return rows.filter(({signal}) => signal.market?.segment !== 'geek' || remaining[signal.record_type || 'signal']-- > 0);
 }
 
 function filterRows() {
@@ -1037,6 +1071,8 @@ function filterRows() {
   const ch = document.getElementById('chSelect')?.value || '';
   const tMode = document.getElementById('timeSelect')?.value || '7d';
   const sortMode = document.getElementById('sortSelect')?.value || 'post';
+  const marketMode = document.getElementById('marketSelect')?.value || 'all';
+  const marketFilter = marketMode === 'consumer' && q ? 'all' : marketMode;
   const noise = document.getElementById('noiseSelect')?.value || 'valid';
   const recordType = selectedRecordType();
   const audienceControl = document.getElementById('audSelect');
@@ -1060,7 +1096,7 @@ function filterRows() {
   };
   const displayRow = s => {
     const post = !recordType && !id && !intent && !topic && ['all', 'valid', 'noise'].includes(noise) ? postByComment.get(s) : null;
-    return post && noiseMatches(post) ? post : s;
+    return post && noiseMatches(post) && (marketFilter === 'all' || post.market?.segment === s.market?.segment) ? post : s;
   };
 
   const matches = sigs.filter(s => {
@@ -1074,6 +1110,8 @@ function filterRows() {
     else if (tMode === 'unknown') timeOk = (f === 'recent_unverified');
     if (!timeOk && !id) return false;
     if (!noiseMatches(s)) return false;
+    const segment = s.market?.segment;
+    if (!id && marketFilter !== 'all' && (marketFilter === 'consumer' ? !segment : marketFilter !== segment)) return false;
     const post = displayRow(s);
     if (ch && channelLabel(s.channel) !== ch && channelLabel(post.channel) !== ch) return false;
     if (recordType && (s.record_type || 'signal') !== recordType) return false;
@@ -1090,18 +1128,21 @@ function filterRows() {
   const rows = new Map();
   for (const match of matches) {
     const signal = displayRow(match);
-    if (!rows.has(signal)) rows.set(signal, {signal, matchedComment: null});
+    if (!rows.has(signal)) rows.set(signal, {signal, matchedComment: null, priority: signal.market?.priority || 0});
     const row = rows.get(signal);
+    row.priority = Math.max(row.priority, match.market?.priority || 0);
     if (match !== signal && (!row.matchedComment || timing.get(match).order > timing.get(row.matchedComment).order)) {
       row.matchedComment = match;
     }
   }
   const sortTime = ({signal, matchedComment}) => {
     const commentTime = timing.get(matchedComment)?.order;
-    return sortMode === 'comment' && Number.isFinite(commentTime) ? commentTime : timing.get(signal).order;
+    return sortMode !== 'post' && Number.isFinite(commentTime) ? commentTime : timing.get(signal).order;
   };
-  FILTERED_SIGS = [...rows.values()].sort((a, b) => sortTime(b) - sortTime(a)
+  const sorted = [...rows.values()].sort((a, b) => (sortMode === 'market' ? b.priority - a.priority : 0)
+    || sortTime(b) - sortTime(a)
     || recordIdOrder.compare(a.signal.id, b.signal.id));
+  FILTERED_SIGS = marketFilter === 'consumer' ? capGeekRows(sorted) : sorted;
   renderSigPage();
 }
 
