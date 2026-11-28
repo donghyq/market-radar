@@ -7,15 +7,18 @@ import re
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
+from urllib.error import HTTPError
 
 import radar_cli
-from evidence.user_comments import save_comment
-from signal_time import market_today, source_time
+from evidence.record_identity import normalized_text
+from evidence.user_comments import sample_public_reviews, save_comment
+from signal_time import epoch_time
 
 
 CONFIG = pathlib.Path(__file__).resolve().parents[2] / "config" / "consumer_queries.json"
 STEAM = "https://store.steampowered.com"
 STEAM_COMMUNITY = "https://steamcommunity.com"
+STEAM_REVIEWS_API = "https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/"
 NOTION = "https://www.notion.com"
 JD = "https://www.jd.com"
 PRODUCT = "消费级虚拟产品"
@@ -57,15 +60,15 @@ def read_public_page(url):
 
 
 def save_catalog_item(conn, channel, category, term, url, title, description, *, price="", reviews=None,
-                      released=""):
+                      released="", release_source="steam_store_release", metric="平台目录信息"):
     status = "公开评价节选" if reviews else UNAVAILABLE
     with conn:
         added = radar_cli.insert_signal(
             conn, channel, "公开目录", category, term, title, description, "",
-            "平台目录信息", status, price, url,
-            source_published_at=released, published_time_source="steam_store_release" if released else "",
+            metric, status, price, url,
+            source_published_at=released, published_time_source=release_source if released else "",
         )
-        return int(added), sum(save_comment(conn, review, refresh=True) for review in reviews or ())
+        return int(added), sum(save_comment(conn, review, refresh=True) for review in sample_public_reviews(reviews or ()))
 
 
 def steam_items(page):
@@ -81,29 +84,57 @@ def steam_items(page):
         yield id_match[1], radar_cli.strip_html(title_match[1]), radar_cli.strip_html(price_match[1]) if price_match else "", day
 
 
-def steam_review_date(text):
-    match = re.search(r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日", text)
-    if not match:
-        return ""
-    year, month, day = match.groups()
-    today = market_today()
-    year = year or str(today.year - ((int(month), int(day)) > (today.month, today.day)))
-    return source_time(f"{year}-{int(month):02d}-{int(day):02d}")[0]
+def read_steam_review_page(params):
+    query = urllib.parse.urlencode({"input_json": json.dumps(params, separators=(",", ":"))})
+    request = urllib.request.Request(STEAM_REVIEWS_API + "?" + query, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=8) as response:
+        return json.load(response)["response"]
 
 
-def steam_reviews(page, app_id, parent_url):
-    for card in re.split(r'(?=<div\b[^>]*class="apphub_Card )', page)[1:]:
-        link = re.search(r'data-modal-content-url="(https://steamcommunity\.com/(?:id|profiles)/([^/"]+)/recommended/'
-                         + re.escape(app_id) + r'/)"', card)
-        body = re.search(r'class="apphub_CardTextContent">\s*<div class="date_posted">(.*?)</div>(.*?)</div>', card, re.S)
-        if not link or not body or not (content := radar_cli.strip_html(body[2])):
+def fetch_steam_reviews(conn, app_id, *, fetch=read_steam_review_page):
+    parent_url = f"{STEAM}/app/{app_id}/"
+    # Preserve IDs from the old HTML collector when a full review body matches uniquely.
+    legacy, existing = {}, {}
+    for row in conn.execute("SELECT comment_id,content,author_id FROM raw_comments WHERE channel='Steam' AND parent_url=?",
+                            (parent_url,)):
+        if row["author_id"]:
+            existing.setdefault(row["author_id"], row["comment_id"])
             continue
-        rating = re.search(r'<div class="title">(不推荐|推荐)</div>', card)
-        yield {
-            "channel": "Steam", "comment_id": f"{app_id}:{link[2].casefold()}", "parent_url": parent_url,
-            "source_url": link[1], "content": content, "commented_at": steam_review_date(body[1]),
-            "comment_time_source": "steam_public_review_date", "source_metric": rating[1] if rating else "",
-        }
+        text = normalized_text(row["content"])
+        if len(text) >= 16:
+            legacy[text] = row["comment_id"] if text not in legacy else None
+    params = {"appid": int(app_id), "filter": 1, "languages": ["schinese", "tchinese"],
+              "review_type": 0, "purchase_type": 1, "num_per_page": 100, "cursor": "*"}
+    reviews = {}
+    for _ in range(3):
+        try:
+            response = fetch(params)
+            entries = response.get("reviews") or []
+            if not isinstance(entries, list):
+                raise ValueError("unexpected Steam review list")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            if isinstance(exc, HTTPError) and exc.code in (401, 403, 429) and not reviews:
+                raise
+            print(f"[WARN] Steam 公开评测分页结束 ({app_id}): {type(exc).__name__}")
+            break
+        for entry in entries:
+            author = str((entry.get("author") or {}).get("steamid") or "")
+            content = (entry.get("review") or "").strip()
+            if not author.isdecimal() or not content:
+                continue
+            review_id = existing.get(author) or legacy.get(normalized_text(content)) or f"{app_id}:{author}"
+            reviews.setdefault(review_id, {
+                "channel": "Steam", "comment_id": review_id, "thread_id": str(app_id), "parent_url": parent_url,
+                "source_url": f"{STEAM_COMMUNITY}/profiles/{author}/recommended/{app_id}/",
+                "content": content, "author_id": author, "commented_at": epoch_time(entry.get("timestamp_created")),
+                "comment_time_source": "steam_public_review_created", "source_updated_at": epoch_time(entry.get("timestamp_updated")),
+                "source_metric": "推荐" if entry.get("voted_up") else "不推荐",
+            })
+        cursor = response.get("cursor")
+        if not entries or not cursor or cursor == params["cursor"]:
+            break
+        params["cursor"] = cursor
+    return sample_public_reviews(reviews.values())
 
 
 def collect_steam(conn, terms, *, fetch=read_public_page):
@@ -118,9 +149,7 @@ def collect_steam(conn, terms, *, fetch=read_public_page):
             seen.add(app_id)
             url = f"{STEAM}/app/{app_id}/"
             try:
-                reviews_url = (f"{STEAM_COMMUNITY}/app/{app_id}/reviews/"
-                               "?browsefilter=mostrecent&l=schinese&filterLanguage=schinese")
-                reviews = list(steam_reviews(fetch(reviews_url), app_id, url))[:5]
+                reviews = fetch_steam_reviews(conn, app_id)
             except (OSError, ValueError) as exc:
                 print(f"[WARN] Steam 公开评测未获取 ({app_id}): {exc}")
                 reviews = None
@@ -144,7 +173,7 @@ def notion_product(page):
 
 
 def notion_reviews(item, url, slug):
-    for review in item.get("review", [])[:5]:
+    for review in item.get("review", []):
         name = review.get("name") or ""
         body = review.get("reviewBody") or ""
         author = (review.get("author") or {}).get("name") or ""
@@ -182,6 +211,7 @@ def collect_notion(conn, slugs, *, fetch=read_public_page):
 
 def jd_items(page, pattern):
     seen = set()
+    seen_titles = set()
     for link in PageLinks(page).links:
         if "price-href" not in (link.get("class") or "").split():
             continue
@@ -189,7 +219,11 @@ def jd_items(page, pattern):
         title = (link.get("title") or "").strip()
         if not url or url[1] in seen or UNRELATED_LISTING.search(title) or not re.search(pattern, title, re.I):
             continue
+        listing = re.sub(r"\s+\d{1,3}款[-－](?:电子稿|电子版)$", "", title)
+        if listing in seen_titles:
+            continue
         seen.add(url[1])
+        seen_titles.add(listing)
         yield f"https://item.jd.com/{url[1]}.html", title
 
 

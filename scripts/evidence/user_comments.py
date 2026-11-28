@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from collab_utils import atomic_text
 from evidence_rules import platform_name
-from signal_time import observed_now, source_time
+from signal_time import observed_now, source_day, source_time
 
 from .comment_profiles import profile_evidence
 from .evidence_cache import assess_records
@@ -14,7 +14,21 @@ from .record_identity import comment_duplicate_rows, comment_number, discard_com
 
 
 COMMENT_ARCHIVE = Path(".market-radar/comments.jsonl")
+PUBLIC_REVIEW_LIMIT = 200
 CONTEXT_FIELDS = ("thread_id", "reply_to_id", "author_id", "app_version", "source_updated_at")
+
+
+def sample_public_reviews(reviews, limit=PUBLIC_REVIEW_LIMIT):
+    """Take a reproducible sample across the visible rating and publication-date ranges."""
+    unique = {row["comment_id"]: row for row in reviews}
+    if len(unique) <= limit:
+        return list(unique.values())
+    ordered = sorted(unique.values(), key=lambda row: (
+        row.get("source_metric", ""), source_day(row.get("commented_at", "")), row["comment_id"],
+    ))
+    if limit == 1:
+        return [ordered[len(ordered) // 2]]
+    return [ordered[index * (len(ordered) - 1) // (limit - 1)] for index in range(limit)]
 
 
 def init_comments(conn):
@@ -44,6 +58,7 @@ def init_comments(conn):
         if field not in columns:
             conn.execute(f"ALTER TABLE raw_comments ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS raw_comment_thread ON raw_comments(channel, parent_url)")
+    conn.execute("CREATE INDEX IF NOT EXISTS raw_comment_native_id ON raw_comments(comment_id)")
 
 
 def http_url(value):

@@ -296,7 +296,7 @@ class EvidenceRules:
         segment = ""
         category = record.get("category") or ""
         named_app = category.startswith("消费级虚拟产品") and platform_name(record) == "App Store"
-        catalog = record_kind(record) == "signal" and (record.get("source_tier") == "公开目录" or named_app)
+        catalog = record_kind(record) == "signal" and (record.get("source_tier") in ("公开目录", "登录态目录") or named_app)
         if catalog:
             segment = "virtual_service" if category == "消费级虚拟服务" else "virtual_product"
         for subject, url, field in ((text, source_url, "text"),

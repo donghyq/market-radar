@@ -1,5 +1,12 @@
 # 证据规则库使用说明
 
+## 规则库的分工
+
+- **信号与评论证据规则**负责意图、推广、可信度和付费证据判定。配置在 [evidence_rules.json](evidence_rules.json)。
+- **分类规则**负责按用途归品类、按源站产品 ID 和别名归产品。配置独立维护，市场热度和产品聚合图可共用。 [分类规则配置](classification/classification_rules.json) · [分类执行器](classification/classifier.py)
+
+分类配置用 `categories` 维护细分用途的稳定 `id`、匹配表达式和采集上下文，用 `groups` 维护看板统计的大类。产品可配置别名、源站 ID 和有歧义别名的上下文。修改分类时更新分类库自己的 `rule_version`。证据快照和 CSV 保留细分用途、分类依据及关联信号编号。
+
 将根目录下的 `rules/` 整体复制到其他工具即可复用。规则放在 `evidence_rules.json`，执行器是 `engine.py`，只使用 Python 3.11 标准库并读写 UTF-8 JSONL。
 
 ```sh

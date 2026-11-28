@@ -13,7 +13,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import radar_cli
 import scale_collector
 from export_dashboard import export_all
-from evidence.user_comments import archive_comments, load_comments, restore_comments
+from evidence.user_comments import archive_comments, load_comments, restore_comments, sample_public_reviews
 
 
 class CollectedCommentsTest(unittest.TestCase):
@@ -78,13 +78,49 @@ class CollectedCommentsTest(unittest.TestCase):
 
     def test_scale_appstore_uses_same_review_ids_as_daily_collection(self):
         _, responses = self.appstore_responses()
-        with patch("scale_collector.urllib.request.urlopen", side_effect=responses):
-            apps = scale_collector.fetch_appstore_category(("测试", "测试"))
-        for app, category, term, reviews in apps:
-            radar_cli.save_appstore_feedback(self.conn, app, category, term, reviews)
-        self.assertEqual(len(apps), 1)
+        with (
+            patch("discovery_scanner.consumer_queries", return_value={"appstore": [("测试", "测试")]}),
+            patch("radar_cli.urllib.request.urlopen", side_effect=responses),
+        ):
+            self.assertEqual(scale_collector.scan_broad_appstore(self.conn), 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM raw_signals").fetchone()[0], 1)
         self.assertEqual([row["comment_id"] for row in load_comments(self.conn)], ["apple-review-1", "apple-review-2"])
+
+    def test_public_appstore_includes_old_high_ratings_and_unrated_products(self):
+        favorite = {
+            "id": {"label": "5-star-review"}, "im:rating": {"label": "5"},
+            "content": {"label": "Paint colors are useful"},
+            "updated": {"label": "2020-01-02T03:04:05+00:00"},
+        }
+        apps = [
+            {"trackId": 51, "trackName": "旅行相册", "userRatingCount": 2},
+            {"trackId": 52, "trackName": "手工图案", "userRatingCount": 0},
+        ]
+
+        def responses(request, **_kwargs):
+            if "customerreviews" not in request.full_url:
+                data = {"results": apps}
+            else:
+                data = {"feed": {"entry": [favorite] if "/id=51/" in request.full_url else []}}
+            return io.BytesIO(json.dumps(data).encode())
+
+        with patch("radar_cli.urllib.request.urlopen", side_effect=responses):
+            self.assertEqual(radar_cli.collect_appstore(self.conn, [("消费级虚拟产品", "生活")]), 2)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM raw_signals").fetchone()[0], 2)
+        comment, = load_comments(self.conn)
+        self.assertEqual(comment["source_metric"], "5 星")
+        self.assertEqual(comment["commented_at"], "2020-01-02T03:04:05+00:00")
+
+    def test_review_sampling_spans_ratings_and_dates_with_unique_ids(self):
+        records = [
+            {"comment_id": str(index), "source_metric": f"{rating} 星", "commented_at": f"2026-09-{day:02d}"}
+            for index, (rating, day) in enumerate((rating, day) for rating in range(1, 6) for day in range(1, 11))
+        ]
+        selected = sample_public_reviews(records + records[:1], 10)
+        self.assertEqual(len({row["comment_id"] for row in selected}), 10)
+        self.assertEqual({row["source_metric"] for row in selected}, {f"{rating} 星" for rating in range(1, 6)})
+        self.assertIn(records[0], selected)
+        self.assertIn(records[-1], selected)
 
     def test_bilibili_separates_video_and_reply_with_independent_time(self):
         gone = self.published - timedelta(days=2)

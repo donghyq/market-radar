@@ -62,6 +62,8 @@ function jumpToAudienceSignals(audName) {
   if (audSel) audSel.value = audName;
   if (timeSel) timeSel.value = "active180";
   if (marketSel) marketSel.value = "all";
+  const classification = document.getElementById("classificationSelect");
+  if (classification) classification.value = "";
   const signalView = document.querySelector('#recordViews button[data-record-type="signal"]');
   if (signalView) selectRecordView(signalView);
   else filterRows();
@@ -327,6 +329,9 @@ function renderSignals() {
   const comments = coverage ? sigs.filter(s => s.record_type === 'comment') : [];
   const intents = [...new Set(comments.flatMap(s => s.intents || []))].sort();
   const topics = [...new Set(comments.flatMap(s => s.topic_tags || []))].sort();
+  const classifications = new Map(sigs.filter(s => s.classification)
+    .map(s => [s.classification.category_id, s.classification.category]));
+  const classificationOptions = [...classifications].sort((a, b) => a[1].localeCompare(b[1], 'zh-CN'));
 
   document.getElementById('tab-signals').innerHTML = `
     ${coverage ? `
@@ -340,19 +345,19 @@ function renderSignals() {
       <input id="qInput" style="max-width:260px;" aria-label="搜索展示编号、原文或标签" placeholder="搜索编号（S12 / C12）、原文或标签" oninput="SIG_PAGE=1;filterRows()">
       <select id="timeSelect" style="max-width:205px;" aria-label="按发布时效筛选" onchange="SIG_PAGE=1;filterRows()">
         <option value="24h">近 24 小时</option>
-        <option value="7d" ${DATA.consumer_market ? '' : 'selected'}>近 7 天</option>
+        <option value="7d" selected>近 7 天</option>
         <option value="30d">近 30 天</option>
         <option value="active180">近 180 天</option>
         <option value="stale_only">超过 180 天</option>
         <option value="unknown">时间待核实</option>
-        <option value="all_time" ${DATA.consumer_market ? 'selected' : ''}>全部时间</option>
+        <option value="all_time">全部时间</option>
       </select>
       ${DATA.consumer_market ? `<select id="marketSelect" aria-label="市场范围" onchange="SIG_PAGE=1;filterRows()">
         <option value="consumer">C 端虚拟产品与服务</option>
         <option value="virtual_product">虚拟产品</option>
         <option value="virtual_service">虚拟服务</option>
         <option value="geek">极客品类</option>
-        <option value="all">全部品类</option>
+        <option value="all" selected>全部品类</option>
       </select>` : ''}
       ${coverage || DATA.consumer_market ? `<select id="sortSelect" aria-label="排序方式" onchange="SIG_PAGE=1;filterRows()">
         ${DATA.consumer_market ? '<option value="market" selected>有付费依据优先</option>' : ''}
@@ -360,13 +365,17 @@ function renderSignals() {
         ${coverage ? '<option value="comment"' + (DATA.consumer_market ? '' : ' selected') + '>新评时间优先</option>' : ''}
       </select>` : ''}
       <select id="audSelect" style="max-width:215px;" aria-label="按买单人群筛选" onchange="SIG_PAGE=1;filterRows()">
-        <option value="">全部买单人群 (${allAuds.length}类)</option>
+        <option value="" selected>全部买单人群 (${allAuds.length}类)</option>
         ${allAuds.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('')}
       </select>
       <select id="chSelect" style="max-width:190px;" aria-label="按渠道筛选" onchange="SIG_PAGE=1;filterRows()">
-        <option value="">全部渠道 (${allChs.length}个)</option>
+        <option value="" selected>全部渠道 (${allChs.length}个)</option>
         ${allChs.map(ch => `<option value="${esc(ch)}">${esc(ch)}</option>`).join('')}
       </select>
+      ${classificationOptions.length ? `<select id="classificationSelect" aria-label="按用途分类筛选" onchange="SIG_PAGE=1;filterRows()">
+        <option value="">全部用途分类</option>
+        ${classificationOptions.map(([key, label]) => '<option value="' + esc(key) + '">' + esc(label) + '</option>').join('')}
+      </select>` : ''}
       <select id="noiseSelect" style="max-width:120px;" aria-label="按有效性筛选" onchange="SIG_PAGE=1;filterRows()">
         <option value="valid">${coverage ? '有效记录' : '有效信号'}</option>
         ${coverage ? '<option value="demand">独立需求证据</option><option value="review">待核实</option><option value="promotion">推广线索</option>' : ''}
@@ -901,8 +910,13 @@ function openSnap(key) {
   const audience = isComment ? '' : ` | 人群画像：${cleanText(s.audience_tag || '通用')}`;
   document.getElementById('mMeta').textContent = `${timeLabel}：${signalPublishedText(s)} | 采集入库：${s.observed_at || cleanText(s.collected_at)}${audience} | 渠道：${cleanText(s.channel)}`;
   const body = document.getElementById('mBody');
+  const classification = s.classification;
+  const groupLine = classification ? '用途分类 · ' + [classification.category,
+    classification.topic !== classification.category && classification.topic, classification.product_name,
+    classification.inherited_from && '关联信号 ' + classification.inherited_from].filter(Boolean).join(' · ') : '';
   body.textContent = [
     evidenceAssessment(s) || (s.is_noise ? `已过滤：${cleanText(s.noise_reason) || '未记录原因'}` : ''),
+    ...(groupLine ? [groupLine] : []),
     '[采集时保存的内容]',
     String(s.content || '').trim(),
     '',
@@ -1039,7 +1053,7 @@ function renderToolkit() {
 }
 
 function switchTab(id, btn) {
-  ['tab-projects','tab-persona','tab-signals','tab-tech','tab-toolkit','tab-submit','tab-whitepaper','tab-roadmap'].forEach(t => {
+  ['tab-projects','tab-persona','tab-signals','tab-heat','tab-tech','tab-toolkit','tab-submit','tab-whitepaper','tab-roadmap'].forEach(t => {
     document.getElementById(t).style.display = (t === id) ? 'block' : 'none';
   });
   document.querySelectorAll('.nav-btn').forEach(b => {
@@ -1047,11 +1061,13 @@ function switchTab(id, btn) {
     if (b === btn) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   });
+  if (id === 'tab-heat') renderMarketHeat();
 }
 
 function signalMatches(s, query) {
   const tags = s.profile_tags ? commentTagLines(s).join(' ') : '';
   return [displayedId(s), s.title, s.content, s.author_or_app, s.audience_tag, tags,
+    s.classification?.category, s.classification?.topic, s.classification?.product_name,
     MARKET_SEGMENTS[s.market?.segment], ...marketLabelLines(s.market), ...commentLabelLines(s)].join(' ').toLowerCase().includes(query);
 }
 
@@ -1072,7 +1088,8 @@ function filterRows() {
   const tMode = document.getElementById('timeSelect')?.value || '7d';
   const sortMode = document.getElementById('sortSelect')?.value || 'post';
   const marketMode = document.getElementById('marketSelect')?.value || 'all';
-  const marketFilter = marketMode === 'consumer' && q ? 'all' : marketMode;
+  const classification = document.getElementById('classificationSelect')?.value || '';
+  const marketFilter = marketMode === 'consumer' && (q || classification) ? 'all' : marketMode;
   const noise = document.getElementById('noiseSelect')?.value || 'valid';
   const recordType = selectedRecordType();
   const audienceControl = document.getElementById('audSelect');
@@ -1096,7 +1113,9 @@ function filterRows() {
   };
   const displayRow = s => {
     const post = !recordType && !id && !intent && !topic && ['all', 'valid', 'noise'].includes(noise) ? postByComment.get(s) : null;
-    return post && noiseMatches(post) && (marketFilter === 'all' || post.market?.segment === s.market?.segment) ? post : s;
+    const sameClassification = !classification || post?.classification?.category_id === s.classification?.category_id;
+    return post && noiseMatches(post) && sameClassification
+      && (marketFilter === 'all' || post.market?.segment === s.market?.segment) ? post : s;
   };
 
   const matches = sigs.filter(s => {
@@ -1110,6 +1129,7 @@ function filterRows() {
     else if (tMode === 'unknown') timeOk = (f === 'recent_unverified');
     if (!timeOk && !id) return false;
     if (!noiseMatches(s)) return false;
+    if (!id && classification && classification !== s.classification?.category_id) return false;
     const segment = s.market?.segment;
     if (!id && marketFilter !== 'all' && (marketFilter === 'consumer' ? !segment : marketFilter !== segment)) return false;
     const post = displayRow(s);

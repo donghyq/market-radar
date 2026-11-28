@@ -9,6 +9,9 @@ from urllib.parse import parse_qs, urlsplit
 from evidence_rules import GITHUB_ISSUE_URL, platform_name, thread_key
 
 
+TEXT_MATCH_PLATFORMS = ("V2EX", "GitHub Issues", "小众软件论坛", "B站")
+
+
 def normalized_text(value):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value or "")).casefold()
 
@@ -45,6 +48,10 @@ def signal_origin(channel, source_url):
     if channel.startswith(("AppStore应用", "App Store 应用")):
         if app := appstore_id(source_url):
             return "appstore:" + app
+    if channel == "Google Play" and host == "play.google.com" and path == "/store/apps/details":
+        package = parse_qs(url.query).get("id", [""])[0]
+        if re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", package):
+            return "google-play:" + package
     if channel.startswith(("HackerNews", "Hacker News")) and host == "news.ycombinator.com" and path == "/item":
         item = parse_qs(url.query).get("id", [""])[0]
         if re.fullmatch(r"[0-9]+", item):
@@ -56,6 +63,7 @@ def signal_origin(channel, source_url):
         "Steam": ("store.steampowered.com", r"/app/([0-9]+)(?:/[^/]+)?", "steam"),
         "Notion 模板": ("www.notion.com", r"/templates/([a-z0-9-]+)", "notion"),
         "京东服务": ("item.jd.com", r"/([0-9]+)\.html", "jd"),
+        "TapTap": ("www.taptap.cn", r"/app/([0-9]+)(?:/review)?", "taptap"),
     }
     if channel in catalogs:
         site, pattern, prefix = catalogs[channel]
@@ -109,7 +117,7 @@ def same_comment(a, b):
         return False
     if a["comment_id"] == b["comment_id"]:
         return True
-    if platform not in ("V2EX", "GitHub Issues", "小众软件论坛", "B站"):
+    if platform not in TEXT_MATCH_PLATFORMS:
         return False
     if platform == "B站":
         parent_a = signal_origin("B站", a["parent_url"])
@@ -135,13 +143,14 @@ def same_comment(a, b):
 
 
 def matching_comments(conn, record):
-    candidates = [dict(row) for row in conn.execute(
-        """SELECT * FROM raw_comments
-           WHERE comment_id=? OR (channel=? AND
-             (parent_url=? OR (thread_id<>'' AND thread_id=?) OR
-              (author_or_app<>'' AND author_or_app=?)))""",
-        (record["comment_id"], record["channel"], record["parent_url"], record["thread_id"], record["author_or_app"]),
-    )]
+    query = "SELECT * FROM raw_comments WHERE comment_id=?"
+    params = (record["comment_id"],)
+    if platform_name(record) in TEXT_MATCH_PLATFORMS:
+        query += """ OR (channel=? AND
+                    (parent_url=? OR (thread_id<>'' AND thread_id=?) OR
+                    (author_or_app<>'' AND author_or_app=?)))"""
+        params += (record["channel"], record["parent_url"], record["thread_id"], record["author_or_app"])
+    candidates = [dict(row) for row in conn.execute(query, params)]
     if any(row["channel"] == record["channel"] and row["comment_id"] == record["comment_id"] for row in candidates):
         return []
     return [row for row in candidates if same_comment(row, record)]
@@ -174,7 +183,7 @@ def comment_duplicate_rows(conn):
         thread = thread_key(row)
         author = (platform, row["author_id"] or normalized_text(row["author_or_app"]))
         identity = (platform, row["comment_id"])
-        candidates = (*threads[thread], *authors.get(author, ()))
+        candidates = (*threads[thread], *authors.get(author, ())) if platform in TEXT_MATCH_PLATFORMS else ()
         prior = identities.get(identity) or min(
             (item for item in candidates if same_comment(item, row)), key=comment_number, default=None,
         )

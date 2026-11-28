@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 import pathlib
-import sqlite3
 import subprocess
 import sys
 
@@ -31,15 +30,23 @@ REPO = f"repos/{REPO_SLUG}"
 PAGE_FILES = ("index.html", "docs/index.html")
 RENDERER_FILES = (
     "scripts/export_dashboard.py",
+    "scripts/market_heat.py",
+    "scripts/signal_time.py",
+    "scripts/evidence/record_identity.py",
     "scripts/dashboard/template.html",
     "scripts/dashboard/dashboard_app.js",
     "scripts/dashboard/research_workstation.js",
+    "scripts/dashboard/market_heat.js",
     "scripts/dashboard/workstation.css",
     "scripts/dashboard/dashboard_config.json",
     "scripts/dashboard/whitepaper_config.json",
+    "rules/classification/__init__.py",
+    "rules/classification/classifier.py",
+    "rules/classification/classification_rules.json",
 )
 DATA_FILES = (
     "config/watch_keywords.json",
+    "config/consumer_queries.json",
     "inbox/chanmama_xianyu_xhs_signals.csv", "exports/signals_full.csv",
     "data/signals/signals_master.jsonl", "data/signals/retired_ids.json", "data/tech_radar.json", "data/persona_stats.json",
 )
@@ -67,11 +74,15 @@ def git_blob_sha(content):
     return hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
 
 
+def git_text_matches(content, sha):
+    return git_blob_sha(content) == sha or git_blob_sha(content.replace(b"\r\n", b"\n")) == sha
+
+
 def pull_and_merge_remote_data(remote_map: dict):
     """拉取远端最新信号流与立项文件，与本地数据做无损并集合并，防止多人覆盖"""
     remote_jsonl_sha = remote_map.get("data/signals/signals_master.jsonl")
     local_jsonl = BASE / "data/signals/signals_master.jsonl"
-    if remote_jsonl_sha and (not local_jsonl.exists() or git_blob_sha(local_jsonl.read_bytes()) != remote_jsonl_sha):
+    if remote_jsonl_sha and (not local_jsonl.exists() or not git_text_matches(local_jsonl.read_bytes(), remote_jsonl_sha)):
         blob = api(f"git/blobs/{remote_jsonl_sha}")
         remote_bytes = base64.b64decode(blob.get("content", ""))
         remote_lines = remote_bytes.decode("utf-8", errors="ignore").splitlines()
@@ -113,16 +124,17 @@ def pull_and_merge_remote_data(remote_map: dict):
             print(f"[MERGE] 已无损合入队友在远端新增的 {merged_new} 条信号并重编译看板。")
 
 
-def prepare_files(root, remote, include_code=False):
+def prepare_files(root, remote, include_code=False, *, check_only=False):
     if not include_code:
         drift = [path for path in RENDERER_FILES
-                 if not (root / path).is_file() or git_blob_sha((root / path).read_bytes()) != remote.get(path)]
+                 if not (root / path).is_file() or not git_text_matches((root / path).read_bytes(), remote.get(path))]
         if drift:
             raise ValueError("本地渲染代码与 main 不一致，如需连同代码改动一起发布请加 --include-code：" + "、".join(drift))
 
     html = (root / PAGE_FILES[0]).read_text(encoding="utf-8")
     bundle = json.loads(html.split("const DATA = ", 1)[1].split(";\n</script>", 1)[0])
-    if html != render_page(bundle) or html.encode() != (root / PAGE_FILES[1]).read_bytes():
+    has_local_comments = "comment_coverage" in bundle or any(row.get("record_type") == "comment" for row in bundle["signals"])
+    if has_local_comments or html != render_page(bundle) or html != (root / PAGE_FILES[1]).read_text(encoding="utf-8"):
         export_all(None, root)
 
     files = list(DATA_FILES) + list(PAGE_FILES)
@@ -130,9 +142,11 @@ def prepare_files(root, remote, include_code=False):
         files.extend(RENDERER_FILES)
         files.extend([
             "README.md", "run_radar.py", "Mac一键采集向导.command", "Windows一键采集向导.bat",
+            ".github/workflows/daily_radar.yml",
             *[p.relative_to(root).as_posix() for folder in ("scripts", "rules")
               for p in sorted((root / folder).rglob("*"))
               if p.is_file() and p.suffix in (".py", ".json", ".md")],
+            *[p.relative_to(root).as_posix() for p in sorted((root / "docs").glob("*.md"))],
             *[p.relative_to(root).as_posix() for p in sorted((root / "team-toolkit").glob("*")) if p.is_file()],
         ])
     for folder in ("data/ideas", "data/archives"):
@@ -143,11 +157,13 @@ def prepare_files(root, remote, include_code=False):
         path = root / rel
         if path.is_file():
             content = path.read_bytes()
-            if git_blob_sha(content) != remote.get(rel):
+            if not git_text_matches(content, remote.get(rel)):
+                content = content.replace(b"\r\n", b"\n")
                 mode = "100755" if rel.endswith((".command", ".sh")) else "100644"
                 if len(content) > 400_000:
-                    import base64 as _b64
-                    b_sha = api("git/blobs", "POST", {"content": _b64.b64encode(content).decode("ascii"), "encoding": "base64"})["sha"]
+                    b_sha = git_blob_sha(content) if check_only else api(
+                        "git/blobs", "POST", {"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"},
+                    )["sha"]
                     changed.append({"path": rel, "mode": mode, "type": "blob", "sha": b_sha})
                 else:
                     changed.append({"path": rel, "mode": mode, "type": "blob", "content": content.decode("utf-8")})
@@ -155,7 +171,8 @@ def prepare_files(root, remote, include_code=False):
 
 
 def sync(check_only=False, include_code=False):
-    ensure_gh_account()
+    if not check_only:
+        ensure_gh_account()
     head = api("git/ref/heads/main")["object"]["sha"]
     tree = api(f"git/commits/{head}")["tree"]["sha"]
     result = api(f"git/trees/{tree}?recursive=1")
@@ -166,7 +183,7 @@ def sync(check_only=False, include_code=False):
     if not check_only:
         pull_and_merge_remote_data(remote)
 
-    changed = prepare_files(BASE, remote, include_code=include_code)
+    changed = prepare_files(BASE, remote, include_code=include_code, check_only=check_only)
     if not changed:
         print("数据和页面均无变更。")
         return

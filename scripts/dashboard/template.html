@@ -141,6 +141,7 @@
   <div class="subbar">
     <nav class="nav" aria-label="主导航">
       <button class="nav-btn active" aria-current="page" onclick="switchTab('tab-projects', this)">研究工作台</button>
+      <button class="nav-btn" id="navHeat" onclick="switchTab('tab-heat', this)">市场热度</button>
       <button class="nav-btn" onclick="switchTab('tab-persona', this)">人群与时效</button>
       <button class="nav-btn" id="navRecords" onclick="switchTab('tab-signals', this)">信号库</button>
       <button class="nav-btn" onclick="switchTab('tab-tech', this)">技术雷达 <span id="lblTechCnt">0</span></button>
@@ -152,6 +153,7 @@
   </div>
 
   <div id="tab-projects"></div>
+  <div id="tab-heat" style="display:none;"></div>
   <div id="tab-persona" style="display:none;"></div>
   <div id="tab-signals" style="display:none;"></div>
   <div id="tab-tech" style="display:none;"></div>
@@ -192,5 +194,6 @@ const DATA = __RADAR_DATA_JSON__;
 </script>
 <script src="dashboard_app.js"></script>
 <script src="research_workstation.js"></script>
+<script src="market_heat.js"></script>
 </body>
 </html>

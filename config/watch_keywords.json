@@ -1,5 +1,6 @@
 {
   "description": "团队共享监测词库：任何成员直接在此处增删关键词，运行采集器即自动生效，无需修改 Python 代码。",
+  "consumer_once_keywords": ["老照片修复", "电子请柬定制", "宠物画像电子版", "旅行照片书电子排版"],
   "browser_xhr_keywords": [
     "microduck",
     "桌面机器人",

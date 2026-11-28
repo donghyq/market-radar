@@ -13,6 +13,22 @@ import run_radar
 
 
 class RadarMenuTest(unittest.TestCase):
+    def test_direct_windows_and_mac_commands_dispatch_actions(self):
+        with patch("run_radar.run_script", return_value=7) as runner, patch("run_radar.ensure_playwright", return_value=True):
+            self.assertEqual(run_radar.main(["export-local"]), 7)
+            self.assertEqual(run_radar.main(["collect-consumer-reviews"]), 7)
+            self.assertEqual(run_radar.main(["xianyu-once"]), 7)
+        self.assertEqual(runner.call_args_list, [
+            call("radar_cli.py", ["export", "--with-comments"]),
+            call("radar_cli.py", ["collect-consumer-reviews"]),
+            call("auto_browser_collector.py", ["--login", "--collect", "--consumer-once"]),
+        ])
+
+    def test_daily_command_stops_on_first_failed_step(self):
+        with patch("run_radar.run_script", side_effect=[0, 7]) as runner:
+            self.assertEqual(run_radar.main(["run-all"]), 7)
+        self.assertEqual(runner.call_args_list, [call("tech_radar.py"), call("auto_discover_ideas.py")])
+
     def test_collect_then_open_local_comments(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)

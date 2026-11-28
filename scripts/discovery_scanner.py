@@ -8,13 +8,16 @@ import sqlite3
 import ssl
 import urllib.parse
 import urllib.request
+from urllib.error import HTTPError
 
 import radar_cli
 from collectors.appinn_collector import collect_appinn
-from collectors.consumer_sources import PRODUCT, collect_jd, collect_notion, collect_steam, consumer_queries
+from collectors.consumer_sources import PRODUCT, collect_jd, collect_notion, collect_steam, consumer_queries, fetch_steam_reviews
+from collectors.public_app_stores import collect_google_play, collect_taptap
 from collectors.v2ex_comments import CHANNEL as V2EX_CHANNEL, collect_replies
 from collab_utils import dump_db_to_jsonl, sync_db_from_jsonl
-from evidence.user_comments import archive_comments, restore_comments
+from evidence.record_identity import appstore_id, signal_origin
+from evidence.user_comments import archive_comments, restore_comments, save_comment
 from evidence_rules import default_rules
 from signal_time import epoch_time, newest_results
 
@@ -90,6 +93,8 @@ def collect_discovery(conn):
         "微信公众号检索": scan_broad_wechat_and_web(conn),
     }
     for label, results in (
+        ("Google Play", collect_google_play(conn, config.get("google_play", []))),
+        ("TapTap", collect_taptap(conn, config.get("taptap", []))),
         ("Steam", collect_steam(conn, config["steam"])),
         ("Notion 模板", collect_notion(conn, config["notion"])),
         ("京东服务", collect_jd(conn, config["jd"])),
@@ -101,6 +106,55 @@ def collect_discovery(conn):
     print(f"[DISCOVERY] 小众软件论坛: 新增主帖={added['小众软件论坛']}，新增回帖={replies}")
     added["V2EX"] = scan_v2ex_pain_points(conn, per_node=1)
     return added
+
+
+def collect_known_consumer_reviews(conn, *, sources=None):
+    """Refresh every saved product of the selected sources, including those with zero reviews."""
+    catalog = {}
+    for row in conn.execute("SELECT channel,source_url,category FROM raw_signals ORDER BY id"):
+        channel, url, category = row
+        if channel.startswith("AppStore应用"):
+            product, source = appstore_id(url) or "", "App Store"
+        elif channel in ("Steam", "Google Play", "TapTap", "Notion 模板"):
+            product, source = signal_origin(channel, url).partition(":")[2], channel
+        else:
+            continue
+        if product:
+            catalog.setdefault(source, {}).setdefault(product, category.removeprefix(f"{PRODUCT} / "))
+
+    totals = {}
+    for source, products in catalog.items():
+        if sources is not None and source not in sources:
+            continue
+        print(f"[COMMENTS] {source} 正在核对 {len(products)} 个已收录产品", flush=True)
+        if source in ("App Store", "Steam"):
+            added = refreshed = visible = 0
+            for product in products:
+                try:
+                    if source == "App Store":
+                        reviews = radar_cli.fetch_appstore_reviews(product)
+                        with conn:
+                            added += radar_cli.save_appstore_reviews(conn, product, reviews)
+                    else:
+                        reviews = fetch_steam_reviews(conn, product)
+                        with conn:
+                            added += sum(save_comment(conn, review, refresh=True) for review in reviews)
+                except HTTPError as exc:
+                    print(f"[COMMENTS] {source} 返回 HTTP {exc.code}，该渠道本轮结束。")
+                    break
+                refreshed += 1
+                visible += bool(reviews)
+            totals[source] = {"products": len(products), "checked": refreshed, "with_reviews": visible, "added": added}
+        else:
+            targets = [(category, product) for product, category in products.items()]
+            if source == "Google Play":
+                results = list(collect_google_play(conn, targets))
+            elif source == "TapTap":
+                results = list(collect_taptap(conn, targets))
+            else:
+                results = list(collect_notion(conn, products))
+            totals[source] = {"products": len(products), "checked": len(results), "added": sum(reviews for _, reviews in results)}
+    return totals
 
 
 def main():

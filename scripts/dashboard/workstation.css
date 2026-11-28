@@ -51,6 +51,43 @@
 .panel-head { min-height: 41px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 13px; border-bottom: 1px solid var(--border); }
 .panel-head h3 { margin: 0; font-size: 13px; white-space: nowrap; font-weight: 650; }
 .panel-count { text-align: right; }
+.market-heat, .heat-evidence { margin-bottom: 16px; }
+.heat-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.heat-heading h2, .heat-heading h3 { margin: 0; color: var(--text); }
+.heat-controls { display: flex; gap: 8px 12px; flex-wrap: wrap; }
+.heat-controls label { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.heat-controls select { width: auto; max-width: min(280px, 65vw); min-height: 32px; }
+.heat-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 16px 0 10px; }
+.heat-totals > div { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 6px 12px; border: 1px solid var(--border); border-top: 2px solid var(--heat-color);
+  border-radius: 5px; background: var(--panel); padding: 8px 12px; }
+.heat-totals span { color: var(--text-secondary); font-size: 12px; }
+.heat-totals strong { color: var(--heat-color); font: 600 clamp(16px, 2vw, 23px) var(--mono); }
+.heat-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.heat-legend .heat-legend-item { display: inline-flex; align-items: center; gap: 8px; min-height: 28px;
+  padding: 3px 8px; font-size: 12px; }
+.heat-legend-item span::before { content: ""; display: inline-block; width: 8px; height: 8px;
+  margin-right: 6px; border-radius: 50%; background: var(--heat-color); }
+.heat-legend-item small { color: var(--text-muted); font: 11px var(--mono); }
+.heat-legend-item[aria-pressed="false"] { opacity: .55; }
+.heat-plot { position: relative; border: 1px solid var(--border); background: var(--bg); border-radius: 6px; }
+#heatChart { display: block; width: 100%; height: clamp(250px, 38vw, 365px); cursor: crosshair; }
+.heat-empty { position: absolute; inset: 45% 12px auto; color: var(--text-muted); text-align: center;
+  font-size: 13px; pointer-events: none; }
+.heat-hint { position: absolute; z-index: 1; width: min(240px, calc(100% - 16px)); pointer-events: none;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 9px 11px;
+  box-shadow: 0 4px 14px #0006; font-size: 12px; color: var(--text-secondary); }
+.heat-hint strong, .heat-hint small { display: block; overflow-wrap: anywhere; }
+.heat-hint strong, .heat-hint .heat-hint-active { color: var(--text); }
+.heat-hint small { color: var(--accent); }
+.heat-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
+.heat-foot span, #heatEvidenceSummary { color: var(--text-muted); font-size: 12px; }
+#heatEvidenceList { list-style: none; margin: 10px 0 0; padding: 0; }
+#heatEvidenceList li { display: flex; align-items: flex-start; gap: 8px 12px; border-top: 1px solid var(--border);
+  padding: 8px 0; color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
+#heatEvidenceList li span { flex: 1; min-width: 0; }
+#heatEvidenceList a { white-space: nowrap; color: var(--accent); }
+.heat-evidence [hidden], .market-heat [hidden] { display: none; }
 .watch-sort { margin: 7px 12px 4px; }
 #watchList { padding: 0 6px 6px; }
 .watch-item { font: inherit; cursor: pointer; text-align: left; width: 100%; display: grid; grid-template-columns: 22px minmax(0,1fr) 25px; gap: 6px; align-items: start; color: var(--text); border: 1px solid transparent; background: transparent; border-radius: 5px; padding: 8px 6px; }

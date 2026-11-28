@@ -11,6 +11,7 @@ from evidence.evidence_cache import signal_record
 from evidence.record_identity import comment_number
 from evidence.user_comments import COMMENT_ARCHIVE, assess_comments, load_comments, restore_comments
 from evidence_rules import PROFILE_FIELDS, default_rules
+from market_heat import build_market_heat
 from persona_and_freshness import enrich_signal_rows
 from signal_time import market_today
 
@@ -24,7 +25,7 @@ ASSESSMENT_FIELDS = ("rule_version", "evidence_status", "counts_as_demand", "mat
 
 def render_page(bundle):
     page = TPL_PATH.read_text(encoding="utf-8")
-    for name in ("dashboard_app.js", "research_workstation.js"):
+    for name in ("dashboard_app.js", "research_workstation.js", "market_heat.js"):
         code = TPL_PATH.with_name(name).read_text(encoding="utf-8")
         page = page.replace(f'<script src="{name}"></script>', f"<script>\n{code}\n</script>")
     css = TPL_PATH.with_name("workstation.css").read_text(encoding="utf-8")
@@ -78,6 +79,16 @@ def assign_display_ids(records):
             row["display_id"] = f"{prefix}{number}"
 
 
+def attach_market_heat(bundle):
+    records = bundle["signals"]
+    assign_display_ids(records)
+    heat = build_market_heat(records, bundle["archives"])
+    groups = heat.pop("record_groups")
+    for row in records:
+        row["classification"] = {**groups[row["display_id"]], "rule_version": heat["classification_version"]}
+    bundle["market_heat"] = heat
+
+
 def write_local_csv(path, signals):
     base_fields = (
         "display_id", "id", "published_at", "freshness_tier", "audience_tag", "channel", "source_tier",
@@ -88,6 +99,9 @@ def write_local_csv(path, signals):
         "thread_id", "reply_to_id", "author_id", "app_version", "source_updated_at",
         "rule_version", "evidence_status", "counts_as_demand",
         "noise_reason", "matches", "market_segment", "market_role", "paid_evidence", "market_evidence",
+        "classification_rule_version", "classification_category_id", "classification_category",
+        "classification_topic_id", "classification_topic",
+        "classification_product_id", "classification_product_name", "classification_basis", "classification_inherited_from",
     )
     tag_columns = {field: "age_band" if field == "age" else field for field in PROFILE_FIELDS}
     fields = [*base_fields, *(column for name in tag_columns.values() for column in (name, name + "_source"))]
@@ -105,6 +119,10 @@ def write_local_csv(path, signals):
             row["market_role"] = market.get("role", "")
             row["paid_evidence"] = market.get("paid_evidence", "")
             row["market_evidence"] = json.dumps(market.get("facts", {}), ensure_ascii=False)
+            classification = signal.get("classification", {})
+            for field in ("rule_version", "category_id", "category", "topic_id", "topic", "product_id",
+                          "product_name", "basis", "inherited_from"):
+                row["classification_" + field] = classification.get(field, "")
             for field, field_name in tag_columns.items():
                 tag = signal.get("profile_tags", {}).get(field, {})
                 row[field_name] = tag.get("value", "")
@@ -135,7 +153,7 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
     rules = default_rules()
     for row in signals:
         result = rules.evaluate(signal_record(row))
-        fields = (*ASSESSMENT_FIELDS, "intents") if with_comments else ("market",)
+        fields = (*ASSESSMENT_FIELDS, "intents") if with_comments else ("market", "counts_as_demand", "evidence_status")
         row.update({field: result[field] for field in fields})
         if with_comments:
             row["pain_tags"] = ",".join(result["pain_tags"])
@@ -191,7 +209,7 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
             },
         }
         signals.extend(comments)
-        assign_display_ids(signals)
+        attach_market_heat(bundle)
         local_dir = base_dir / COMMENT_ARCHIVE.parent
         write_local_csv(local_dir / "exports/signals_full.csv", signals)
         out = local_dir / "index.html"
@@ -199,7 +217,7 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
             stream.write(render_page(bundle))
         return out
 
-    assign_display_ids(signals)
+    attach_market_heat(bundle)
     out = base_dir / "index.html"
     docs = base_dir / "docs/index.html"
     out.write_text(render_page(bundle), encoding="utf-8")

@@ -6,7 +6,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
 import radar_cli
-from collectors.consumer_sources import collect_notion, jd_items
+from collectors.consumer_sources import collect_notion, fetch_steam_reviews, jd_items
 from evidence_rules import default_rules
 
 
@@ -73,5 +73,25 @@ class ConsumerMarketTest(unittest.TestCase):
           <a class="price-href" href="//item.jd.com/1.html" title="老照片修复无痕改字">商家一</a>
           <a class="price-href" href="//item.jd.com/2.html" title="老照片修复与修补">商家二</a>
           <a class="price-href" href="https://other.test/3.html" title="老照片修复">其他</a>
+          <a class="price-href" href="//item.jd.com/4.html" title="婚礼请帖定制 01款-电子稿">同个请帖</a>
+          <a class="price-href" href="//item.jd.com/5.html" title="婚礼请帖定制 05款-电子稿">同个请帖</a>
         """
         self.assertEqual(list(jd_items(page, "老照片修复")), [("https://item.jd.com/2.html", "老照片修复与修补")])
+        self.assertEqual(list(jd_items(page, "请帖定制")), [("https://item.jd.com/4.html", "婚礼请帖定制 01款-电子稿")])
+
+    def test_steam_review_pagination_ends_on_empty_page(self):
+        seen = []
+
+        def fetch(params):
+            seen.append(params["cursor"])
+            if params["cursor"] == "*":
+                return {"cursor": "next", "reviews": [{"author": {"steamid": "7"}, "review": "Useful game",
+                                                       "voted_up": True, "timestamp_created": 1770000000}]}
+            return {"cursor": "next", "query_summary": {"num_reviews": 0}}
+
+        with radar_cli.get_conn(pathlib.Path(":memory:")) as conn:
+            radar_cli.init_db(conn)
+            reviews = fetch_steam_reviews(conn, "123", fetch=fetch)
+        self.assertEqual(seen, ["*", "next"])
+        self.assertEqual([review["comment_id"] for review in reviews], ["123:7"])
+        self.assertEqual(reviews[0]["source_metric"], "推荐")

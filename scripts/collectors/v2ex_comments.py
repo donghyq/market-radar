@@ -6,7 +6,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 from signal_time import epoch_time
-from evidence.user_comments import save_comment
+from evidence.user_comments import PUBLIC_REVIEW_LIMIT, save_comment
 
 
 CHANNEL = "V2EX开发者与需求社区(实时API)"
@@ -14,7 +14,7 @@ TOPIC_URL = re.compile(r"https?://(?:[\w-]+\.)*v2ex\.com/t/([0-9]+)/?(?:[?#].*)?
 FLOOR_LINK = re.compile(r'@<a\s+href="/member/([^"/]+)"[^>]*>[^<]+</a>\s*#(\d{1,5})(?!\d)')
 
 
-def normalize_replies(replies, topic_id, parent_url, *, limit=200):
+def normalize_replies(replies, topic_id, parent_url, *, limit=PUBLIC_REVIEW_LIMIT):
     """Keep source IDs and times. Resolve a quoted floor when the author agrees."""
     parent_url = urlsplit(parent_url)._replace(query="", fragment="").geturl()
     first = max(0, len(replies) - limit)

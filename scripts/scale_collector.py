@@ -3,7 +3,7 @@
 """
 高信噪比规模化信号扩充引擎 (High-Purity Scale Collector)
 在不引入垃圾水贴的前提下，放开人为 Top-3 截断，将有效信号库扩充至 1,000+ 条统计有效规模：
-1. 中国区 App Store 28 个高付费垂直品类：每类取高评内购 App，拉取完整最新 RSS 页中全部近 180 天内的 1~3 星实质痛点差评（字数>=15）；
+1. App Store 消费品类及各星级公开评价沿用常规发现采集口径；
 2. GitHub 高复刻与生产力项目 Issues 痛点深挖：批量拉取具身硬件、知识动画(Remotion/Manim)、独立游戏(Godot)、浏览器自动化、本地Agent项目的真实报错与 Feature Request；
 3. 微信公众号 20 组细分商业变现与行业痛点检索（严格提取真实 timeConvert 时间戳并拦截 >180 天旧文）；
 4. V2EX 多技术与创业节点（create / programmer / macos / share / ask / career / apple）真实痛点帖采集。
@@ -14,16 +14,16 @@ import datetime
 import json
 import pathlib
 import re
-import sqlite3
 import ssl
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import radar_cli
 from collectors.github_issue_comments import collect_issue_comments
 from collectors.v2ex_comments import CHANNEL as V2EX_CHANNEL, collect_replies
 from collab_utils import dump_db_to_jsonl, sync_db_from_jsonl
+from discovery_scanner import scan_broad_appstore
 from evidence.user_comments import archive_comments, restore_comments
 from evidence_rules import github_issue_excerpt
 from persona_and_freshness import ensure_columns, enrich_all_signals
@@ -43,66 +43,6 @@ def is_within_days(date_str: str, max_days: int = 180) -> bool:
         return (TODAY - d).days <= max_days
     except Exception:
         return False
-
-
-def fetch_appstore_category(cat_and_term: Tuple[str, str]):
-    category, term = cat_and_term
-    out = []
-    pain_words = [
-        "扣费", "会员", "太贵", "不好用", "闪退", "客服", "导出", "限制", "套路",
-        "收费", "广告", "微信", "打印", "卡顿", "报错", "消失", "同步", "水印",
-        "模糊", "识别", "骗钱", "自动续费", "买断", "永久", "崩溃", "没反应", "功能"
-    ]
-    try:
-        s_url = "https://itunes.apple.com/search?" + urllib.parse.urlencode(
-            {"term": term, "country": "cn", "entity": "software", "limit": 6}
-        )
-        req = urllib.request.Request(s_url, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as resp:
-            apps = json.loads(resp.read().decode("utf-8", errors="ignore")).get("results", [])
-
-        for app in apps:
-            tid = str(app.get("trackId") or "")
-            rcnt = int(app.get("userRatingCount") or 0)
-            if not tid.isdecimal() or rcnt < 150:
-                continue
-
-            reviews = []
-            for page_no in (1, 2):
-                rss_u = f"https://itunes.apple.com/cn/rss/customerreviews/page={page_no}/id={tid}/sortby=mostrecent/json"
-                r_req = urllib.request.Request(rss_u, headers={"User-Agent": UA})
-                try:
-                    with urllib.request.urlopen(r_req, timeout=8, context=SSL_CTX) as r_resp:
-                        entries = json.loads(r_resp.read().decode("utf-8", errors="ignore")).get("feed", {}).get("entry", [])
-                except Exception:
-                    break
-                if isinstance(entries, dict):
-                    entries = [entries]
-                picked = 0
-                for e in entries:
-                    rating = (e.get("im:rating") or {}).get("label", "")
-                    if rating not in ("1", "2", "3"):
-                        continue
-                    pub = (e.get("updated") or {}).get("label") or ""
-                    pub_dt = pub[:10]
-                    if not is_within_days(pub_dt, 180):
-                        continue
-                    rt = radar_cli.strip_html((e.get("title") or {}).get("label", ""))
-                    rc = radar_cli.strip_html((e.get("content") or {}).get("label", ""))
-                    if len(rc) < 16:
-                        continue
-                    if any(w in (rt + rc) for w in pain_words):
-                        comment = radar_cli.appstore_review_comment(e, tid)
-                        if comment:
-                            reviews.append(comment)
-                            picked += 1
-                        if picked >= 12:
-                            break
-            if reviews:
-                out.append((app, category, term, reviews))
-    except Exception:
-        pass
-    return out
 
 
 def fetch_github_issues_batch(repo_info: Tuple[str, str]) -> List[Dict[str, str]]:
@@ -240,27 +180,6 @@ def main():
     sync_db_from_jsonl(conn, BASE_DIR, radar_cli.insert_signal)
     restore_comments(conn, BASE_DIR)
 
-    appstore_tasks = [
-        ("电商卖家与主图工具", "电商 主图 批量 水印"),
-        ("电商卖家与主图工具", "快递 打单 发货 电商"),
-        ("电商卖家与主图工具", "商品 详情页 美工 作图"),
-        ("个体户开单与报价工具", "进销存 开单 收银 库存"),
-        ("个体户开单与报价工具", "装修 报价 量房 CAD"),
-        ("个体户开单与报价工具", "电子收据 发票 记账 门店"),
-        ("招投标与合同办公工具", "标书 招投标 企业 查询"),
-        ("招投标与合同办公工具", "PDF 转换 扫描 盖章 电子签"),
-        ("招投标与合同办公工具", "录音转文字 会议纪要 实时翻译"),
-        ("高客单专业IP工具", "法宝 裁判 律师 案件管理"),
-        ("高客单专业IP工具", "教培 排课 消课 招生 家校"),
-        ("知识视频与口播工具", "去水印 视频提取 配音 字幕"),
-        ("知识视频与口播工具", "动画制作 手绘视频 白板动画"),
-        ("知识视频与口播工具", "录屏 剪辑 直播助手 虚拟主播"),
-        ("备考与K12家长刚需", "背单词 考研 法考 刷题 题库"),
-        ("备考与K12家长刚需", "字帖 练字 口算 批改 作业"),
-        ("备考与K12家长刚需", "日程 番茄钟 习惯 打卡 备忘录"),
-        ("桌面宠物与小组件", "桌面宠物 灵动岛 小组件 壁纸"),
-    ]
-
     github_issue_tasks = [
         ("具身智能与AI宠物硬件", "huggingface/lerobot"),
         ("知识可视化与动画引擎", "remotion-dev/remotion"),
@@ -283,12 +202,9 @@ def main():
     ]
 
     collected_records: List[Dict[str, str]] = []
-    inserted = 0
+    inserted = scan_broad_appstore(conn)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
-        for batch in ex.map(fetch_appstore_category, appstore_tasks):
-            for app, category, term, reviews in batch:
-                inserted += radar_cli.save_appstore_feedback(conn, app, category, term, reviews)
         for batch in ex.map(fetch_github_issues_batch, github_issue_tasks):
             collected_records.extend(batch)
         for batch in ex.map(fetch_wechat_batch, wechat_tasks):

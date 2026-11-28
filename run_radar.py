@@ -5,6 +5,7 @@ Market Radar 团队通用交互式采集与协同向导 (兼容 macOS / Windows 
 非技术成员无需记忆命令行参数，直接运行 `python3 run_radar.py` 或双击启动脚本即可按数字菜单操作。
 """
 
+import argparse
 import json
 import pathlib
 import subprocess
@@ -32,6 +33,24 @@ def ensure_playwright():
         return res.returncode == 0
 
 
+def run_xianyu_once():
+    if not ensure_playwright():
+        return 1
+    return run_script("auto_browser_collector.py", ["--login", "--collect", "--consumer-once"])
+
+
+def run_daily():
+    for script, args in (
+        ("tech_radar.py", None),
+        ("auto_discover_ideas.py", None),
+        ("radar_cli.py", ["run-all"]),
+    ):
+        status = run_script(script) if args is None else run_script(script, args)
+        if status:
+            return status
+    return 0
+
+
 def open_local_workbench():
     if run_script("radar_cli.py", ["export", "--with-comments"]):
         print("本地工作台生成失败，请查看上方错误。")
@@ -56,17 +75,17 @@ def menu():
         print("  [5] 将我本机新抓的数据与团队 GitHub 总库安全合并并发布线上看板")
         print("  [6] 生成并打开本地最新工作台（含评论）")
         print("  [7] 免登录补采库内 V2EX / GitHub Issues 的公开评论并打开本地工作台")
+        print("  [8] 闲鱼消费服务单轮采样（在同一窗口登录并采集）")
+        print("  [9] 免登录补采已收录消费产品的公开评价")
         print("  [0] 退出")
         print("------------------------------------------------------------")
-        choice = input("请输入功能编号 [0-7] 并回车: ").strip()
+        choice = input("请输入功能编号 [0-9] 并回车: ").strip()
 
         if choice == "0":
             print("已退出。")
             break
         elif choice == "1":
-            run_script("tech_radar.py")
-            run_script("auto_discover_ideas.py")
-            run_script("radar_cli.py", ["run-all"])
+            run_daily()
         elif choice == "2":
             if ensure_playwright():
                 run_script("auto_browser_collector.py", ["--login"])
@@ -100,9 +119,30 @@ def menu():
                 print("公开评论采集失败，请查看上方错误。")
                 continue
             open_local_workbench()
+        elif choice == "8":
+            run_xianyu_once()
+        elif choice == "9":
+            if run_script("radar_cli.py", ["collect-consumer-reviews"]) == 0:
+                webbrowser.open((ROOT / ".market-radar" / "index.html").as_uri())
         else:
-            print("无效选项，请输入 0~7。")
+            print("无效选项，请输入 0~9。")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Market Radar 采集向导。省略命令打开交互菜单。")
+    parser.add_argument("action", nargs="?", choices=("run-all", "collect-consumer-reviews", "export-local", "xianyu-once"),
+                        help="日常采集、免登录补采消费评价、导出本地看板或闲鱼单轮采样")
+    args = parser.parse_args(argv)
+    if args.action is None:
+        menu()
+        return 0
+    if args.action == "xianyu-once":
+        return run_xianyu_once()
+    if args.action == "run-all":
+        return run_daily()
+    command = ["export", "--with-comments"] if args.action == "export-local" else [args.action]
+    return run_script("radar_cli.py", command)
 
 
 if __name__ == "__main__":
-    menu()
+    raise SystemExit(main())

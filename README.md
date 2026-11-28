@@ -11,10 +11,11 @@ Roadmap 追踪（GitHub Issue #2）：`https://github.com/donghyq/market-radar/i
 1. **拉取仓库并获得权限**：管理员在 GitHub 仓库 `Settings -> Collaborators` 中添加成员账号后，成员克隆仓库并确保已登录 `gh auth login`。
 2. **零命令菜单式采集**：
    - **macOS**：直接双击根目录 `Mac一键采集向导.command`（或终端执行 `python3 run_radar.py`）
-   - **Windows**：装好 Python 3 后，双击根目录 `Windows一键采集向导.bat`
-   - 选 `[1]` 采集 App Store、B 站等公开渠道，再选 `[6]` 生成并打开本地工作台。在「信号与评论」里分开查看两类记录，打开「信号」中的「评论（N）」可查看完整快照。
+   - **Windows**：使用 Python 3.10 或更新版本，双击根目录 `Windows一键采集向导.bat`。
+   - 选 `[1]` 采集 App Store、Google Play、TapTap 等公开渠道，再选 `[6]` 生成并打开本地工作台。在「信号与评论」里分开查看两类记录，打开「信号」中的「评论（N）」可查看完整快照。
    - 选 `[7]` 免登录补采库内 V2EX 主题与 GitHub Issues 的公开评论，随后打开本地工作台。
-   - 选 `[2]` 扫码保存闲鱼或蝉妈妈登录态，保存在本机 `.browser_profile/`，再选 `[3]` 采集商品或榜单。
+   - 选 `[8]` 做闲鱼消费服务单轮采样，在同一浏览器窗口扫码登录，回到终端输入 `y` 开始。选 `[2]` 可保存闲鱼或蝉妈妈登录态，选 `[3]` 可使用保存的登录态采集商品或榜单。
+   - 选 `[9]` 免登录补采已收录消费产品的公开评价。单品单轮最多 200 条，覆盖公开样本中的各评分和日期。评价少或暂时读不到的产品仍保留在信号库。
 3. **无损合并上传**：在菜单选 `[5]`（或执行 `python3 scripts/sync_github.py`），脚本会自动拉取远端队友刚抓的数据按唯一指纹去重合并，重新编译看板并同步上线，不会互相覆盖。
 
 ---
@@ -29,7 +30,7 @@ Roadmap 追踪（GitHub Issue #2）：`https://github.com/donghyq/market-radar/i
 +-----------------------------------------------------------------------------------+
 |                               1. 多源信号采集层                                   |
 |  - 免登录 API 采集 (scripts/radar_cli.py & scripts/discovery_scanner.py)          |
-|    * Apple 中国区 App Store (iTunes Search + CustomerReviews 1~3星差评 JSON 流)   |
+|    * Apple 中国区 App Store (iTunes Search + CustomerReviews 各星级公开评价)      |
 |    * Bilibili (Web Search + Reply API，计算 Favorites/Play 收藏率与高赞痛点评论)  |
 |    * 微信公众号 (搜狗微信检索解析，提取一线变现复盘与行业实测数据)                |
 |    * V2EX 开发者与需求节点 (Topics API，捕获独立开发与工具求购信号)               |
@@ -108,7 +109,7 @@ market-radar/
 1. **历史基线恢复（`sync_db_from_jsonl`）**  
    每次执行命令时，先读取 `data/signals/signals_master.jsonl` 重建或合并至本地 `radar.db`，确保多人协作时老数据不丢失。
 2. **多源增量抓取（`collect` / `discovery_scanner.py` / `auto_browser_collector.py`）**  
-   默认采集 App Store 差评、Steam 与 Notion 的公开评价、京东公开服务目录及社区求助，搜词和来源在 `config/consumer_queries.json`。授权评论可用 `inbox/*.csv` 导入，评论行填写 `record_type=comment`、`channel`、`comment_id`、`parent_url` 和 `content`。
+   默认采集 App Store 各星级评价、Google Play 美国区与 TapTap 的网页可见评价、Steam 与 Notion 的公开评价、京东公开服务目录及社区求助。搜词和来源在 `config/consumer_queries.json`。授权评论可用 `inbox/*.csv` 导入，评论行填写 `record_type=comment`、`channel`、`comment_id`、`parent_url` 和 `content`。
 3. **硬规则去噪与痛点打标（`clean_and_tag_signals`）**  
    - 长度 `< 15` 字符或命中营销导流正则（`免费领|扣111|加微|私信领|进群交流` 且无实质差评/销量指标）的记录标记 `is_noise = 1`，在终端中默认折叠并标注。
    - 根据正文与量化指标自动匹配标签：`付费意愿已验证`、`现有方案体验差/求平替`、`国内环境/使用门槛卡点`、`Token/算力成本高`、`B端交付与续费痛点`。
@@ -124,8 +125,10 @@ market-radar/
 本工具仅依赖 Python 3 标准库（仅在使用 `auto_browser_collector.py` 浏览器抓包时需本机已安装的 `playwright`），无需配置复杂虚拟环境。
 
 ### 4.1 一键日常增量更新（拉取常规渠道 + 清洗 + 重新编译看板）
+Windows 的 `Windows一键采集向导.bat` 和 macOS 的 `Mac一键采集向导.command` 均可接收 `run-all`、`collect-consumer-reviews`、`export-local` 或 `xianyu-once`。省略参数打开交互菜单，`xianyu-once` 使用同一窗口登录并确认采样。
+
 ```bash
-python3 scripts/radar_cli.py run-all
+python3 run_radar.py run-all
 ```
 
 ### 4.2 采集虚拟产品和服务并导出本地信号与评论
@@ -134,7 +137,7 @@ python3 scripts/discovery_scanner.py
 python3 scripts/radar_cli.py export --with-comments
 ```
 
-打开 `.market-radar/index.html`，可筛选虚拟产品、虚拟服务、极客品类或全部记录。默认按付费依据排序，信号和评论分别限制极客占比。
+打开 `.market-radar/index.html`，「信号与评论」默认查看近 7 天、全部品类、全部买单人群和全部渠道，按付费依据优先排序。选择「C 端虚拟产品与服务」时，信号和评论分别限制极客占比。
 
 ### 4.3 蝉妈妈 / 闲鱼 / 小红书全自动 XHR 抓包（免手动导 CSV）
 ```bash
