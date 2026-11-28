@@ -8,6 +8,7 @@ import shutil
 
 from collab_utils import atomic_text, sync_db_from_jsonl
 from evidence.evidence_cache import signal_record
+from evidence.record_identity import comment_number
 from evidence.user_comments import COMMENT_ARCHIVE, assess_comments, load_comments, restore_comments
 from evidence_rules import PROFILE_FIELDS, default_rules
 
@@ -65,9 +66,19 @@ def comment_signals(conn):
     return rows
 
 
+def assign_display_ids(records):
+    """Give each record type its own consecutive display numbers."""
+    signals = sorted((row for row in records if row.get("record_type") != "comment"), key=lambda row: row["id"])
+    comments = sorted((row for row in records if row.get("record_type") == "comment"),
+                      key=lambda row: (row["channel"], comment_number(row)))
+    for prefix, group in (("S", signals), ("C", comments)):
+        for number, row in enumerate(group, 1):
+            row["display_id"] = f"{prefix}{number}"
+
+
 def write_local_csv(path, signals):
     base_fields = (
-        "id", "published_at", "freshness_tier", "audience_tag", "channel", "source_tier",
+        "display_id", "id", "published_at", "freshness_tier", "audience_tag", "channel", "source_tier",
         "category", "query_term", "author_or_app", "title", "content", "metric_primary",
         "metric_secondary", "rating_or_price", "pain_tags", "is_noise", "collected_at", "source_url",
         "record_type", "comment_id", "parent_url", "source_published_at", "published_time_precision",
@@ -81,7 +92,7 @@ def write_local_csv(path, signals):
     with atomic_text(path, encoding="utf-8-sig") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
-        for signal in signals:
+        for signal in sorted(signals, key=lambda row: (row.get("record_type") == "comment", int(row["display_id"][1:]))):
             row = {field: signal.get(field, "") for field in base_fields}
             row["record_type"] = row["record_type"] or "signal"
             row["intents"] = "、".join(signal.get("intents", ()))
@@ -112,6 +123,8 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
             conn.close()
 
     signals = [dict(r) for r in conn.execute("SELECT * FROM raw_signals ORDER BY is_noise ASC, id ASC").fetchall()]
+    for signal in signals:
+        signal.pop("origin_key", None)
     cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
     wp = json.loads(WP_PATH.read_text(encoding="utf-8")) if WP_PATH.exists() else {}
 
@@ -169,6 +182,7 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
             },
         }
         signals.extend(comments)
+        assign_display_ids(signals)
         local_dir = base_dir / COMMENT_ARCHIVE.parent
         write_local_csv(local_dir / "exports/signals_full.csv", signals)
         out = local_dir / "index.html"
@@ -176,6 +190,7 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
             stream.write(render_page(bundle))
         return out
 
+    assign_display_ids(signals)
     out = base_dir / "index.html"
     docs = base_dir / "docs/index.html"
     out.write_text(render_page(bundle), encoding="utf-8")

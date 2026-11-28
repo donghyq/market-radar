@@ -11,6 +11,8 @@ from contextlib import contextmanager
 
 from signal_time import LEGACY_DATE_SOURCE, market_today, source_time
 
+RETIRED_IDS_PATH = pathlib.Path("data/signals/retired_ids.json")
+
 
 def now_str() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -91,17 +93,39 @@ def restore_signal(conn, r, insert_fn) -> bool:
 
 
 def sync_db_from_jsonl(conn: sqlite3.Connection, base_dir: pathlib.Path, insert_fn) -> int:
+    from evidence.record_identity import reconcile_archived_retirements, reserve_signal_ids
+
+    retired = base_dir / RETIRED_IDS_PATH
+    retired_ids = json.loads(retired.read_text(encoding="utf-8")) if retired.exists() else []
+    if not isinstance(retired_ids, list) or any(type(value) is not int or value <= 0 for value in retired_ids):
+        raise ValueError("retired signal IDs must be a list of positive integers")
     jsonl_path = base_dir / "data" / "signals" / "signals_master.jsonl"
-    if not jsonl_path.exists():
-        return 0
-    loaded = 0
-    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        if restore_signal(conn, json.loads(line), insert_fn):
-            loaded += 1
-    conn.commit()
-    return loaded
+    text = jsonl_path.read_text(encoding="utf-8") if jsonl_path.exists() else ""
+    records = [json.loads(line) for line in text.splitlines() if line.strip()]
+    with conn:
+        if retired_ids:
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            reconcile_archived_retirements(conn, records, retired_ids)
+            reserve_signal_ids(conn, retired_ids)
+        return sum(restore_signal(conn, record, insert_fn) for record in records)
+
+
+def write_signal_archive(conn: sqlite3.Connection, base_dir: pathlib.Path):
+    rows = [dict(r) for r in conn.execute("SELECT * FROM raw_signals ORDER BY id ASC").fetchall()]
+    jsonl_path = base_dir / "data" / "signals" / "signals_master.jsonl"
+    with atomic_text(jsonl_path) as stream:
+        for row in rows:
+            row.pop("origin_key", None)
+            key = f"{row['channel']}|{row['title']}|{row['author_or_app']}"
+            row["uid"] = hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
+            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+    ids = [row[0] for row in conn.execute("SELECT id FROM retired_signal_ids ORDER BY id")]
+    if ids:
+        with atomic_text(base_dir / RETIRED_IDS_PATH) as stream:
+            json.dump(ids, stream, indent=2)
+            stream.write("\n")
+    return rows
 
 
 def dump_db_to_jsonl(conn: sqlite3.Connection, base_dir: pathlib.Path) -> int:
@@ -116,14 +140,7 @@ def dump_db_to_jsonl(conn: sqlite3.Connection, base_dir: pathlib.Path) -> int:
            WHERE COALESCE(first_seen, '')='' OR COALESCE(last_seen, '')=''"""
     )
     conn.commit()
-    rows = [dict(r) for r in conn.execute("SELECT * FROM raw_signals ORDER BY id ASC").fetchall()]
-    jsonl_path = base_dir / "data" / "signals" / "signals_master.jsonl"
-    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_text(jsonl_path) as f:
-        for r in rows:
-            key = f"{r['channel']}|{r['title']}|{r['author_or_app']}"
-            r["uid"] = hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    rows = write_signal_archive(conn, base_dir)
 
     arch_dir = base_dir / "data" / "archives"
     arch_dir.mkdir(parents=True, exist_ok=True)

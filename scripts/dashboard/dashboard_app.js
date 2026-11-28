@@ -53,16 +53,16 @@ function freshBadge(tier, pubDate, hour24) {
 }
 
 function jumpToAudienceSignals(audName) {
-  const btns = document.querySelectorAll(".nav-btn");
-  let sigBtn = null;
-  btns.forEach(b => { if (b.textContent.includes("信号库")) sigBtn = b; });
+  const sigBtn = document.getElementById("navRecords");
   if (sigBtn) switchTab("tab-signals", sigBtn);
   const audSel = document.getElementById("audSelect");
   const timeSel = document.getElementById("timeSelect");
   SIG_PAGE = 1;
   if (audSel) audSel.value = audName;
   if (timeSel) timeSel.value = "active180";
-  filterRows();
+  const signalView = document.querySelector('#recordViews button[data-record-type="signal"]');
+  if (signalView) selectRecordView(signalView);
+  else filterRows();
 }
 
 function renderPersonaAndFreshness() {
@@ -175,8 +175,14 @@ function recordKey(s) {
     : String(s.id);
 }
 
+function displayedId(s) {
+  return s.display_id ?? s.id;
+}
+
 function recordIdLabel(s) {
-  return `${s.record_type === 'comment' ? '评论 ' : ''}#${s.id}`;
+  const id = displayedId(s);
+  const number = /^[SC]\d+$/.test(id) ? id : `#${id}`;
+  return `${s.record_type === 'comment' ? '评论 ' : ''}${number}`;
 }
 
 const recordIdOrder = new Intl.Collator(undefined, {numeric: true});
@@ -240,7 +246,7 @@ function renderDetailCard(p, idx) {
   const chips = (p.evidence_ids || []).map(eid => {
     const s = SIG_MAP[eid];
     if (!s) return '';
-    return `<button class="btn" onclick="openSnap(${eid})">证据 #${eid} · ${esc(cleanText(s.author_or_app).slice(0,14))} (${esc(s.metric_primary)})</button>`;
+    return `<button class="btn" onclick="openSnap(${eid})">证据 ${escapeHtml(recordIdLabel(s))} · ${esc(cleanText(s.author_or_app).slice(0,14))} (${esc(s.metric_primary)})</button>`;
   }).join(' ');
 
   return `
@@ -312,18 +318,24 @@ let FILTERED_SIGS = [];
 
 function renderSignals() {
   const sigs = DATA.signals || [];
-  const now = Date.now();
-  document.getElementById('lblSigCnt').innerText = sigs.filter(s => !s.is_noise && signalTiming(s, now).tier === '7d_hot').length;
   const allAuds = [...new Set(sigs.map(s => cleanText(s.audience_tag)).filter(Boolean))];
   const allChs = [...new Set(sigs.map(s => channelLabel(s.channel)).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
   const coverage = DATA.comment_coverage;
+  document.getElementById('navRecords').textContent = coverage ? '信号与评论' : '信号库';
   const comments = coverage ? sigs.filter(s => s.record_type === 'comment') : [];
   const intents = [...new Set(comments.flatMap(s => s.intents || []))].sort();
   const topics = [...new Set(comments.flatMap(s => s.topic_tags || []))].sort();
 
   document.getElementById('tab-signals').innerHTML = `
+    ${coverage ? `
+      <div class="record-views" id="recordViews" role="group" aria-label="按记录类型查看">
+        <span>库内总量</span>
+        <button type="button" class="btn" data-record-type="" aria-pressed="true" onclick="selectRecordView(this)">全部记录 ${sigs.length.toLocaleString('zh-CN')}</button>
+        <button type="button" class="btn" data-record-type="signal" aria-pressed="false" onclick="selectRecordView(this)">信号 ${(sigs.length - comments.length).toLocaleString('zh-CN')}</button>
+        <button type="button" class="btn" data-record-type="comment" aria-pressed="false" onclick="selectRecordView(this)">评论 ${comments.length.toLocaleString('zh-CN')}</button>
+      </div>` : ''}
     <div class="signal-controls" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">
-      <input id="qInput" style="max-width:260px;" aria-label="搜索信号" placeholder="搜索编号(#12)、原文或标签" oninput="SIG_PAGE=1;filterRows()">
+      <input id="qInput" style="max-width:260px;" aria-label="搜索展示编号、原文或标签" placeholder="搜索编号（S12 / C12）、原文或标签" oninput="SIG_PAGE=1;filterRows()">
       <select id="timeSelect" style="max-width:205px;" aria-label="按发布时效筛选" onchange="SIG_PAGE=1;filterRows()">
         <option value="24h">近 24 小时</option>
         <option value="7d" selected>近 7 天</option>
@@ -346,14 +358,10 @@ function renderSignals() {
         ${allChs.map(ch => `<option value="${esc(ch)}">${esc(ch)}</option>`).join('')}
       </select>
       <select id="noiseSelect" style="max-width:120px;" aria-label="按有效性筛选" onchange="SIG_PAGE=1;filterRows()">
-        <option value="valid">有效信号</option>
+        <option value="valid">${coverage ? '有效记录' : '有效信号'}</option>
         ${coverage ? '<option value="demand">独立需求证据</option><option value="review">待核实</option><option value="promotion">推广线索</option>' : ''}
         <option value="all">含噪音</option>
       </select>
-      ${coverage ? `<select id="recordSelect" aria-label="按记录类型筛选" onchange="SIG_PAGE=1;filterRows()">
-        <option value="">全部记录</option><option value="comment">仅看评论</option>
-        <option value="signal">仅看信号</option>
-      </select>` : ''}
       ${intents.length ? '<select id="commentIntentSelect" aria-label="按评论意图筛选" onchange="SIG_PAGE=1;filterRows()"><option value="">全部评论意图</option>'
         + intents.map(label => '<option value="' + esc(label) + '">' + esc(label) + '</option>').join('') + '</select>' : ''}
       ${topics.length ? '<select id="commentTopicSelect" aria-label="按评论主题筛选" onchange="SIG_PAGE=1;filterRows()"><option value="">全部评论主题</option>'
@@ -366,14 +374,26 @@ function renderSignals() {
         return `${name} ${n}/${coverage.total}（${(100*n/coverage.total).toFixed(1)}%）`;
       }).join(' · ')}
     </p>` : ''}
-    <div class="table-wrap" role="region" aria-label="信号明细" tabindex="0">
+    <div class="table-wrap" role="region" aria-label="${coverage ? '信号与评论明细' : '信号明细'}" tabindex="0">
       <table>
-        <thead><tr><th class="signal-time">编号 / 源站发布日</th><th width="185">渠道 / 买单人群画像</th><th width="160">来源对象</th><th>标题与本地保存的正文摘要</th><th width="155">量化指标</th><th width="95">操作</th></tr></thead>
+        <thead><tr><th class="signal-time">展示编号 / 源站发布日</th><th width="185">渠道 / 买单人群画像</th><th width="160">来源对象</th><th>标题与本地保存的正文摘要</th><th width="155">量化指标</th><th width="95">操作</th></tr></thead>
         <tbody id="sigTbody"></tbody>
       </table>
     </div>
     <div id="sigPager" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;"></div>
   `;
+  filterRows();
+}
+
+function selectedRecordType() {
+  return document.querySelector('#recordViews button[aria-pressed="true"]')?.dataset.recordType || '';
+}
+
+function selectRecordView(button) {
+  for (const option of button.parentElement.querySelectorAll('button')) {
+    option.setAttribute('aria-pressed', String(option === button));
+  }
+  SIG_PAGE = 1;
   filterRows();
 }
 
@@ -440,13 +460,13 @@ function renderSigPage() {
   }).join('');
 
   const tbody = document.getElementById('sigTbody');
-  if (tbody) tbody.innerHTML = rowsHtml || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:24px;">无匹配信号记录</td></tr>';
+  if (tbody) tbody.innerHTML = rowsHtml || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:24px;">无匹配记录</td></tr>';
   const out = document.getElementById('signalCount');
   if (out) {
-    const commentTotal = DATA.comment_coverage?.total || 0;
-    const signalTotal = (DATA.signals || []).length - commentTotal;
-    const commentCount = DATA.comment_coverage ? ` / ${commentTotal} 条评论` : '';
-    out.textContent = `库内 ${signalTotal} 条信号${commentCount} · 匹配 ${total} 条 · 第 ${SIG_PAGE}/${totalPages} 页`;
+    const type = selectedRecordType();
+    const unit = type === 'comment' ? '条评论' : type === 'signal' || !DATA.comment_coverage ? '条信号' : '行';
+    const library = DATA.comment_coverage ? '' : `库内 ${(DATA.signals || []).length.toLocaleString('zh-CN')} 条信号 · `;
+    out.textContent = `${library}当前匹配 ${total.toLocaleString('zh-CN')} ${unit} · 第 ${SIG_PAGE}/${totalPages} 页`;
   }
   const pager = document.getElementById('sigPager');
   if (pager) {
@@ -1006,22 +1026,30 @@ function switchTab(id, btn) {
 
 function signalMatches(s, query) {
   const tags = s.profile_tags ? commentTagLines(s).join(' ') : '';
-  return [s.id, s.title, s.content, s.author_or_app, s.audience_tag, tags,
+  return [displayedId(s), s.title, s.content, s.author_or_app, s.audience_tag, tags,
     ...commentLabelLines(s)].join(' ').toLowerCase().includes(query);
 }
 
 function filterRows() {
   const sigs = DATA.signals || [];
   const q = (document.getElementById('qInput')?.value || '').trim().toLowerCase();
-  const id = q.startsWith('#') ? q.slice(1) : '';
+  const id = q.match(/^#?([sc]\d+)$/)?.[1] || (q.startsWith('#') ? q.slice(1) : '');
   const ch = document.getElementById('chSelect')?.value || '';
-  const aud = document.getElementById('audSelect')?.value || '';
   const tMode = document.getElementById('timeSelect')?.value || '7d';
   const sortMode = document.getElementById('sortSelect')?.value || 'post';
   const noise = document.getElementById('noiseSelect')?.value || 'valid';
-  const recordType = document.getElementById('recordSelect')?.value || '';
-  const intent = document.getElementById('commentIntentSelect')?.value || '';
-  const topic = document.getElementById('commentTopicSelect')?.value || '';
+  const recordType = selectedRecordType();
+  const audienceControl = document.getElementById('audSelect');
+  const intentControl = document.getElementById('commentIntentSelect');
+  const topicControl = document.getElementById('commentTopicSelect');
+  const commentsOnly = recordType === 'comment';
+  const signalsOnly = recordType === 'signal';
+  if (audienceControl) audienceControl.disabled = commentsOnly;
+  if (intentControl) intentControl.disabled = signalsOnly;
+  if (topicControl) topicControl.disabled = signalsOnly;
+  const aud = commentsOnly ? '' : audienceControl?.value || '';
+  const intent = signalsOnly ? '' : intentControl?.value || '';
+  const topic = signalsOnly ? '' : topicControl?.value || '';
   const now = Date.now();
   const timing = new Map(sigs.map(s => [s, signalTiming(s, now)]));
   const noiseMatches = s => {
@@ -1054,7 +1082,7 @@ function filterRows() {
     if (topic && !s.topic_tags?.includes(topic)) return false;
     if (aud && cleanText(s.audience_tag) !== aud && cleanText(post.audience_tag) !== aud) return false;
     if (q) {
-      if (id) return String(s.id).toLowerCase() === id;
+      if (id) return String(displayedId(s)).toLowerCase() === id;
       return signalMatches(s, q) || (post !== s && signalMatches(post, q));
     }
     return true;

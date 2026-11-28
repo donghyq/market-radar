@@ -10,6 +10,7 @@ from signal_time import observed_now, source_time
 
 from .comment_profiles import profile_evidence
 from .evidence_cache import assess_records
+from .record_identity import comment_duplicate_rows, comment_number, discard_comments, matching_comments
 
 
 COMMENT_ARCHIVE = Path(".market-radar/comments.jsonl")
@@ -42,6 +43,7 @@ def init_comments(conn):
     for field in CONTEXT_FIELDS:
         if field not in columns:
             conn.execute(f"ALTER TABLE raw_comments ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
+    conn.execute("CREATE INDEX IF NOT EXISTS raw_comment_thread ON raw_comments(channel, parent_url)")
 
 
 def http_url(value):
@@ -72,6 +74,16 @@ def save_comment(conn, record, *, refresh=False):
                                                      for field in CONTEXT_FIELDS[:-1])
     context = (thread_id, reply_to_id, author_id, app_version)
     evidence = profile_evidence(record)
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    candidate = {
+        "channel": channel, "comment_id": comment_id, "parent_url": parent_url, "source_url": source_url,
+        "content": content, "thread_id": thread_id, "author_id": author_id,
+        "author_or_app": record.get("author_or_app") or "",
+    }
+    duplicates = matching_comments(conn, candidate)
+    if any(comment_number(row) <= comment_number(candidate) for row in duplicates):
+        return False
     cursor = conn.execute(
         """INSERT OR IGNORE INTO raw_comments (
                channel, comment_id, parent_url, source_url, content, author_or_app,
@@ -89,6 +101,7 @@ def save_comment(conn, record, *, refresh=False):
         ),
     )
     if cursor.rowcount:
+        discard_comments(conn, duplicates)
         return True
 
     if refresh and updated_at:
@@ -153,11 +166,16 @@ def assess_comments(conn, comments):
 
 def restore_comments(conn, base_dir):
     archive = base_dir / COMMENT_ARCHIVE
-    if archive.exists():
-        with conn, archive.open(encoding="utf-8") as stream:
-            for line in stream:
-                if line.strip():
-                    save_comment(conn, json.loads(line))
+    with conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        if archive.exists():
+            with archive.open(encoding="utf-8") as stream:
+                for line in stream:
+                    if line.strip():
+                        save_comment(conn, json.loads(line))
+        _, duplicates = comment_duplicate_rows(conn)
+        discard_comments(conn, (row for row, _ in duplicates))
 
 
 def archive_comments(conn, base_dir):

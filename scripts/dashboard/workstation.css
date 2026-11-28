@@ -113,6 +113,9 @@
 .matrix-link small { display: block; color: var(--text-muted); }
 .table-wrap { overflow-x: auto; }
 .signal-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+.record-views { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.record-views > span { color: var(--text-muted); font-size: 12px; }
+.record-views .btn { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .signal-controls input { max-width: 380px; }
 .signal-controls select { max-width: 208px; }
 .signal-controls output, .source-link { color: var(--text-muted); font-size: 12px; }

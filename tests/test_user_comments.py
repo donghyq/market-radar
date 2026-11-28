@@ -128,6 +128,27 @@ class UserCommentTest(unittest.TestCase):
         )
         self.assertTrue(all(r["id"] == r["comment_id"] for r in rows))
 
+    def test_dashboard_and_csv_use_separate_signal_and_comment_numbers(self):
+        self.assertTrue(radar_cli.insert_signal(self.conn, "test", "test", "test", "test", "一个公开原帖",
+                                                "来自源站的信号正文", "test", "", "", "", self.sample["parent_url"],
+                                                signal_id=11837))
+        source_id = "323454041088"
+        self.assertTrue(save_comment(self.conn, {**self.sample, "comment_id": source_id}))
+        public = export_all(self.conn, self.root)
+        local = export_all(self.conn, self.root, with_comments=True)
+
+        def records(path):
+            text = path.read_text(encoding="utf-8")
+            return json.loads(text.split("const DATA = ", 1)[1].split(";\n</script>", 1)[0])["signals"]
+
+        self.assertEqual([(r["display_id"], r["id"]) for r in records(public)], [("S1", 11837)])
+        self.assertEqual([(r["display_id"], r["id"]) for r in records(local)], [("S1", 11837), ("C1", source_id)])
+        with (local.parent / "exports/signals_full.csv").open(encoding="utf-8-sig", newline="") as stream:
+            reader = csv.DictReader(stream)
+            self.assertEqual(reader.fieldnames[0], "display_id")
+            self.assertEqual([(r["display_id"], r["id"], r["comment_id"]) for r in reader],
+                             [("S1", "11837", ""), ("C1", source_id, source_id)])
+
     def test_local_export_is_separate_and_keeps_sourced_labels(self):
         save_comment(self.conn, {**self.sample, "content": "我是教师。",
                                  "ip_location": "广东", "profile_source": "测试导出"})

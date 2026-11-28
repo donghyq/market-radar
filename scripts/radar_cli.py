@@ -29,6 +29,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 from evidence.evidence_cache import init_evidence_cache, update_signal_assessments
+from evidence.record_identity import duplicate_legacy_review, init_record_identity, signal_origin
 from evidence.user_comments import assess_comments, load_comments, save_comment
 from signal_time import epoch_time, market_today, newest_results, observed_now, source_day, source_time
 
@@ -118,6 +119,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     init_comments(conn)
     init_evidence_cache(conn)
     ensure_columns(conn)
+    init_record_identity(conn)
 
 
 def strip_html(text: str) -> str:
@@ -153,6 +155,10 @@ def insert_signal(
     observed_at = observed_now() if observed_at is None else observed_at
     author = author_or_app[:100]
     title = title[:200]
+    origin = signal_origin(channel, source_url[:500])
+    signal_id = signal_id if type(signal_id) is int and signal_id > 0 else None
+    if duplicate_legacy_review(conn, channel, source_url, content):
+        return False
     cur = conn.cursor()
     # Skip known duplicates before SQLite allocates an AUTOINCREMENT value.
     cur.execute(
@@ -161,16 +167,19 @@ def insert_signal(
             id, channel, source_tier, category, query_term, title, content,
             author_or_app, metric_primary, metric_secondary, rating_or_price,
             source_url, collected_at, published_at, source_published_at,
-            published_time_source, published_time_precision, observed_at
+            published_time_source, published_time_precision, observed_at, origin_key
         ) SELECT
-            CASE WHEN EXISTS (SELECT 1 FROM raw_signals WHERE id = ?) THEN NULL ELSE ? END,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            CASE WHEN EXISTS (SELECT 1 FROM raw_signals WHERE id = ?)
+                       OR EXISTS (SELECT 1 FROM retired_signal_ids WHERE id = ?) THEN NULL ELSE ? END,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         WHERE NOT EXISTS (
             SELECT 1 FROM raw_signals WHERE channel=? AND title=? AND author_or_app=?
-        )
+        ) AND (?='' OR NOT EXISTS (
+            SELECT 1 FROM raw_signals WHERE origin_key=? AND origin_key<>''
+        ))
         """,
         (
-            signal_id, signal_id, channel,
+            signal_id, signal_id, signal_id, channel,
             source_tier,
             category,
             query_term,
@@ -187,18 +196,31 @@ def insert_signal(
             published_time_source if raw_time else "",
             precision,
             observed_at,
-            channel, title, author,
+            origin,
+            channel, title, author, origin, origin,
         ),
     )
     added = cur.rowcount > 0
-    if not added and raw_time:
+    if not added and origin and observed_at:
         cur.execute(
-            """UPDATE raw_signals SET source_published_at=?, published_time_source=?,
+            """UPDATE raw_signals SET metric_primary=?, metric_secondary=?, rating_or_price=?, observed_at=?
+               WHERE id=(SELECT MIN(id) FROM raw_signals WHERE origin_key=? AND origin_key<>'')
+                 AND (julianday(observed_at) IS NULL OR julianday(observed_at)<julianday(?))""",
+            (metric_primary[:80], metric_secondary[:80], rating_or_price[:80], observed_at, origin, observed_at),
+        )
+    if not added and raw_time:
+        recovered_issue = content[:1000] if origin.startswith("github-issue:") and precision == "timestamp" else ""
+        cur.execute(
+            """UPDATE raw_signals SET
+               content=CASE WHEN origin_key=? AND ?<>'' AND COALESCE(source_published_at, '')=''
+                            THEN ? ELSE content END,
+               source_published_at=?, published_time_source=?,
                published_time_precision=?, observed_at=COALESCE(NULLIF(observed_at, ''), ?)
                WHERE channel=? AND title=? AND author_or_app=?
                  AND (COALESCE(source_published_at, '')='' OR
                       (published_time_precision='date' AND ?='timestamp'))""",
-            (raw_time, published_time_source, precision, observed_at, channel, title, author, precision),
+            (origin, recovered_issue, recovered_issue, raw_time, published_time_source, precision,
+             observed_at, channel, title, author, precision),
         )
     return added
 
