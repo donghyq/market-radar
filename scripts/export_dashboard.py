@@ -7,22 +7,25 @@ import pathlib
 import shutil
 
 from collab_utils import atomic_text, sync_db_from_jsonl
-from comment_profiles import PROFILE_FIELDS, label_comment
-from user_comments import COMMENT_ARCHIVE, load_comments, restore_comments
+from evidence.evidence_cache import signal_record
+from evidence.user_comments import COMMENT_ARCHIVE, assess_comments, load_comments, restore_comments
+from evidence_rules import PROFILE_FIELDS, default_rules
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
-CFG_PATH = pathlib.Path(__file__).resolve().parent / "dashboard_config.json"
-WP_PATH = pathlib.Path(__file__).resolve().parent / "whitepaper_config.json"
-TPL_PATH = pathlib.Path(__file__).resolve().parent / "template.html"
+DASHBOARD_DIR = pathlib.Path(__file__).resolve().with_name("dashboard")
+CFG_PATH = DASHBOARD_DIR / "dashboard_config.json"
+WP_PATH = DASHBOARD_DIR / "whitepaper_config.json"
+TPL_PATH = DASHBOARD_DIR / "template.html"
+ASSESSMENT_FIELDS = ("rule_version", "evidence_status", "counts_as_demand", "matches", "is_noise", "noise_reason")
 
 
 def render_page(bundle):
     page = TPL_PATH.read_text(encoding="utf-8")
     for name in ("dashboard_app.js", "research_workstation.js"):
         code = TPL_PATH.with_name(name).read_text(encoding="utf-8")
-        page = page.replace(f'<script src="scripts/{name}"></script>', f"<script>\n{code}\n</script>")
+        page = page.replace(f'<script src="{name}"></script>', f"<script>\n{code}\n</script>")
     css = TPL_PATH.with_name("workstation.css").read_text(encoding="utf-8")
-    page = page.replace('<link rel="stylesheet" href="scripts/workstation.css">', f"<style>\n{css}\n</style>")
+    page = page.replace('<link rel="stylesheet" href="workstation.css">', f"<style>\n{css}\n</style>")
     data = json.dumps(bundle, ensure_ascii=False).replace("<", r"\u003c")
     return page.replace("__RADAR_DATA_JSON__", data)
 
@@ -30,10 +33,12 @@ def render_page(bundle):
 def comment_signals(conn):
     """Project comments onto the existing signal view without changing any stored signal ID."""
     rows = []
-    for index, comment in enumerate(load_comments(conn), 1):
-        labels = label_comment(comment)
+    comments = load_comments(conn)
+    results = assess_comments(conn, comments)
+    for comment, result in zip(comments, results):
+        labels = {field: result[field] for field in ("profile_tags", "stance", "intents", "topic_tags", *ASSESSMENT_FIELDS)}
         rows.append({
-            "id": -index,
+            "id": comment["comment_id"],
             "record_type": "comment",
             "title": "用户评论",
             "category": "用户评论",
@@ -49,7 +54,12 @@ def comment_signals(conn):
             "published_time_precision": comment["comment_time_precision"],
             "published_time_source": comment["comment_time_source"],
             "observed_at": comment["observed_at"],
-            "is_noise": 0,
+            "thread_id": comment["thread_id"],
+            "reply_to_id": comment["reply_to_id"],
+            "author_id": comment["author_id"],
+            "app_version": comment["app_version"],
+            "source_updated_at": comment["source_updated_at"],
+            "pain_tags": ",".join(result["pain_tags"]),
             **labels,
         })
     return rows
@@ -61,7 +71,10 @@ def write_local_csv(path, signals):
         "category", "query_term", "author_or_app", "title", "content", "metric_primary",
         "metric_secondary", "rating_or_price", "pain_tags", "is_noise", "collected_at", "source_url",
         "record_type", "comment_id", "parent_url", "source_published_at", "published_time_precision",
-        "published_time_source", "observed_at", "stance", "intents",
+        "published_time_source", "observed_at", "stance", "intents", "topic_tags",
+        "thread_id", "reply_to_id", "author_id", "app_version", "source_updated_at",
+        "rule_version", "evidence_status", "counts_as_demand",
+        "noise_reason", "matches",
     )
     tag_columns = {field: "age_band" if field == "age" else field for field in PROFILE_FIELDS}
     fields = [*base_fields, *(column for name in tag_columns.values() for column in (name, name + "_source"))]
@@ -72,6 +85,8 @@ def write_local_csv(path, signals):
             row = {field: signal.get(field, "") for field in base_fields}
             row["record_type"] = row["record_type"] or "signal"
             row["intents"] = "、".join(signal.get("intents", ()))
+            row["topic_tags"] = "、".join(signal.get("topic_tags", ()))
+            row["matches"] = json.dumps(signal.get("matches", []), ensure_ascii=False)
             for field, field_name in tag_columns.items():
                 tag = signal.get("profile_tags", {}).get(field, {})
                 row[field_name] = tag.get("value", "")
@@ -139,7 +154,13 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
     }
 
     if with_comments:
+        rules = default_rules()
+        for row in signals:
+            result = rules.evaluate(signal_record(row))
+            row.update({field: result[field] for field in (*ASSESSMENT_FIELDS, "intents")})
+            row["pain_tags"] = ",".join(result["pain_tags"])
         comments = comment_signals(conn)
+        conn.commit()
         bundle["comment_coverage"] = {
             "total": len(comments),
             "counts": {

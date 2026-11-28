@@ -13,7 +13,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import radar_cli
 import scale_collector
 from export_dashboard import export_all
-from user_comments import archive_comments, load_comments, restore_comments
+from evidence.user_comments import archive_comments, load_comments, restore_comments
 
 
 class CollectedCommentsTest(unittest.TestCase):

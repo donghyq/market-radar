@@ -30,8 +30,13 @@ REPO = f"repos/{REPO_SLUG}"
 
 PAGE_FILES = ("index.html", "docs/index.html")
 RENDERER_FILES = (
-    "scripts/export_dashboard.py", "scripts/template.html", "scripts/dashboard_app.js",
-    "scripts/research_workstation.js", "scripts/workstation.css",
+    "scripts/export_dashboard.py",
+    "scripts/dashboard/template.html",
+    "scripts/dashboard/dashboard_app.js",
+    "scripts/dashboard/research_workstation.js",
+    "scripts/dashboard/workstation.css",
+    "scripts/dashboard/dashboard_config.json",
+    "scripts/dashboard/whitepaper_config.json",
 )
 DATA_FILES = (
     "config/watch_keywords.json",
@@ -125,12 +130,13 @@ def prepare_files(root, remote, include_code=False):
         files.extend(RENDERER_FILES)
         files.extend([
             "README.md", "run_radar.py", "Mac一键采集向导.command", "Windows一键采集向导.bat",
-            *[str(p.relative_to(root)) for p in sorted((root / "scripts").glob("*.py"))],
-            *[str(p.relative_to(root)) for p in sorted((root / "scripts").glob("*.json"))],
-            *[str(p.relative_to(root)) for p in sorted((root / "team-toolkit").glob("*")) if p.is_file()],
+            *[p.relative_to(root).as_posix() for folder in ("scripts", "rules")
+              for p in sorted((root / folder).rglob("*"))
+              if p.is_file() and p.suffix in (".py", ".json", ".md")],
+            *[p.relative_to(root).as_posix() for p in sorted((root / "team-toolkit").glob("*")) if p.is_file()],
         ])
     for folder in ("data/ideas", "data/archives"):
-        files.extend(str(p.relative_to(root)) for p in sorted((root / folder).glob("*.json")))
+        files.extend(p.relative_to(root).as_posix() for p in sorted((root / folder).glob("*.json")))
 
     changed = []
     for rel in dict.fromkeys(files):

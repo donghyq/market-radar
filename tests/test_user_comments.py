@@ -10,9 +10,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
 import radar_cli
-from comment_profiles import label_comment
-from export_dashboard import export_all
-from user_comments import COMMENT_ARCHIVE, archive_comments, load_comments, restore_comments, save_comment
+from evidence.comment_profiles import label_comment
+from evidence.user_comments import COMMENT_ARCHIVE, archive_comments, load_comments, restore_comments, save_comment
+from export_dashboard import comment_signals, export_all
 
 
 class UserCommentTest(unittest.TestCase):
@@ -114,6 +114,20 @@ class UserCommentTest(unittest.TestCase):
         self.assertEqual(label_comment({"content": "功能很稳，好用。"})["stance"], "正面")
         self.assertEqual(label_comment({"content": "哪里买？"})["stance"], "不明确")
 
+    def test_exported_comment_ids_are_source_ids_across_insertions(self):
+        large_id = "9007199254740993"
+        self.assertTrue(save_comment(self.conn, {**self.sample, "comment_id": large_id}))
+        self.assertEqual(comment_signals(self.conn)[0]["id"], large_id)
+        self.assertTrue(save_comment(self.conn, {**self.sample, "comment_id": "1"}))
+        self.assertTrue(save_comment(self.conn, {**self.sample, "channel": "App Store", "comment_id": large_id}))
+
+        rows = comment_signals(self.conn)
+        self.assertEqual(
+            {(r["channel"], r["id"]) for r in rows},
+            {(self.sample["channel"], large_id), (self.sample["channel"], "1"), ("App Store", large_id)},
+        )
+        self.assertTrue(all(r["id"] == r["comment_id"] for r in rows))
+
     def test_local_export_is_separate_and_keeps_sourced_labels(self):
         save_comment(self.conn, {**self.sample, "content": "我是教师。",
                                  "ip_location": "广东", "profile_source": "测试导出"})
@@ -133,12 +147,14 @@ class UserCommentTest(unittest.TestCase):
             "total": 2, "counts": {"age": 0, "ip_location": 1, "occupation": 1, "interests": 0},
         })
         self.assertEqual(data["signals"][0]["source_published_at"], self.sample["commented_at"])
+        self.assertEqual([row["id"] for row in data["signals"]], ["13", "14"])
         self.assertEqual(data["signals"][0]["parent_url"], self.sample["parent_url"])
         self.assertEqual(data["signals"][0]["author_profile_url"], self.sample["author_profile_url"])
         self.assertEqual(data["signals"][1]["author_profile_url"], "")
         with (local.parent / "exports/signals_full.csv").open(encoding="utf-8-sig", newline="") as stream:
             rows = list(csv.DictReader(stream))
         self.assertEqual(rows[0]["occupation"], "教师")
+        self.assertEqual([row["id"] for row in rows], ["13", "14"])
         self.assertEqual(rows[0]["occupation_source"], "评论自述")
         self.assertEqual(rows[0]["age_band"], "未知")
         self.assertEqual(rows[1]["content"], "'=1+1")

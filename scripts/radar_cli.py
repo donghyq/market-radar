@@ -28,8 +28,9 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
+from evidence.evidence_cache import init_evidence_cache, update_signal_assessments
+from evidence.user_comments import assess_comments, load_comments, save_comment
 from signal_time import epoch_time, market_today, newest_results, observed_now, source_day, source_time
-from user_comments import save_comment
 
 BASE_WORKSPACE = pathlib.Path(__file__).resolve().parent.parent
 DB_PATH = BASE_WORKSPACE / "radar.db"
@@ -113,8 +114,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     from persona_and_freshness import ensure_columns
-    from user_comments import init_comments
+    from evidence.user_comments import init_comments
     init_comments(conn)
+    init_evidence_cache(conn)
     ensure_columns(conn)
 
 
@@ -207,15 +209,23 @@ def appstore_review_comment(entry, app_id):
     if not review_id or not content.strip():
         return None
     title = ((entry.get("title") or {}).get("label") or "").strip()
-    reviewer = (entry.get("author") or {}).get("name") or {}
+    author = entry.get("author") or {}
+    reviewer = author.get("name") or {}
+    author_url = (author.get("uri") or {}).get("label") or ""
+    author_id = re.fullmatch(r"https://itunes\.apple\.com/[a-z]{2}/reviews/id(\d+)/?", author_url)
     rating = (entry.get("im:rating") or {}).get("label") or ""
+    updated = (entry.get("updated") or {}).get("label") or ""
     return {
         "channel": "App Store",
         "comment_id": review_id,
         "parent_url": f"https://apps.apple.com/cn/app/id{app_id}",
+        "thread_id": str(app_id),
         "content": f"{title}\n{content}" if title and title != content.strip() else content,
         "author_or_app": reviewer.get("label", ""),
-        "commented_at": (entry.get("updated") or {}).get("label") or "",
+        "author_id": author_id[1] if author_id else "",
+        "app_version": (entry.get("im:version") or {}).get("label") or "",
+        "commented_at": updated,
+        "source_updated_at": updated,
         "comment_time_source": "appstore_review_updated",
         "source_metric": f"{rating} 星" if rating else "",
     }
@@ -244,7 +254,7 @@ def save_appstore_feedback(conn, app, category, term, reviews):
             published_time_source="appstore_release_date",
         )
     for comment in reviews:
-        save_comment(conn, comment)
+        save_comment(conn, comment, refresh=True)
     return int(added)
 
 
@@ -507,66 +517,16 @@ def ingest_inbox_csv(conn: sqlite3.Connection, inbox_dir: pathlib.Path = INBOX_D
 
 
 def clean_and_tag_signals(conn: sqlite3.Connection) -> Dict[str, int]:
-    """硬规则清洗：剔除纯营销引流软文、过短无意义内容，并自动提取痛点标签"""
-    cur = conn.cursor()
-    rows = cur.execute("SELECT id, channel, title, content, metric_primary FROM raw_signals").fetchall()
-
-    spam_patterns = [
-        r"免费领",
-        r"扣\s*111",
-        r"加微",
-        r"私信领",
-        r"进群交流",
-        r"纯福利分享",
-    ]
-    tag_rules = [
-        ("付费意愿已验证", r"扣费|会员|月销|想要|投流|单价|付费|变现|高毛利|出单"),
-        ("现有方案体验差/求平替", r"差评|垃圾|不好用|闪退|套路|太贵|平替|不能分享|模糊"),
-        ("国内环境/使用门槛卡点", r"Claude|中转|封号|部署|不会配|环境|翻墙|吓哭"),
-        ("Token/算力成本高", r"Token|算力|成本|烧不起|免费额度"),
-        ("B端交付与续费痛点", r"教培|招生|续费|家长|周报|错题|定制"),
-    ]
-
-    total = len(rows)
-    noise_cnt = 0
-    valid_cnt = 0
-
-    for row in rows:
-        sid = row["id"]
-        text = f"{row['title']} {row['content']}"
-        is_noise = 0
-        noise_reason = ""
-
-        if len(text.strip()) < 15:
-            is_noise = 1
-            noise_reason = "内容过短(<15字)，缺乏具体痛点上下文"
-        else:
-            for pat in spam_patterns:
-                if re.search(pat, text) and "差评" not in text and "想要" not in row["metric_primary"]:
-                    is_noise = 1
-                    noise_reason = f"命中纯引流软文特征词({pat})"
-                    break
-
-        matched_tags = []
-        for tag_name, pat in tag_rules:
-            if re.search(pat, text, re.I) or re.search(pat, row["metric_primary"], re.I):
-                matched_tags.append(tag_name)
-        if not matched_tags:
-            matched_tags.append("基础赛道线索")
-
-        if is_noise:
-            noise_cnt += 1
-        else:
-            valid_cnt += 1
-
-        cur.execute(
-            "UPDATE raw_signals SET is_noise = ?, noise_reason = ?, pain_tags = ? WHERE id = ?",
-            (is_noise, noise_reason, ",".join(matched_tags), sid),
-        )
-    conn.commit()
+    """Apply the local evidence rules and update the existing signal fields."""
+    with conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        update_signal_assessments(conn)
+        assess_comments(conn, load_comments(conn))
     from persona_and_freshness import enrich_all_signals
     enrich_all_signals(conn)
-    return {"total": total, "valid": valid_cnt, "noise": noise_cnt}
+    total, noise_count = conn.execute("SELECT COUNT(*), COALESCE(SUM(is_noise), 0) FROM raw_signals").fetchone()
+    return {"total": total, "valid": total - noise_count, "noise": noise_count}
 
 
 def load_opportunities_seed() -> List[Dict[str, Any]]:
@@ -627,9 +587,29 @@ def evaluate_opportunities(conn: sqlite3.Connection) -> int:
     return count
 
 
+def collect_public_comments(conn):
+    from collectors.github_issue_comments import collect_issue_comments
+    from collectors.v2ex_comments import TOPIC_URL, collect_replies
+    from evidence_rules import GITHUB_ISSUE_URL
+
+    topics = {}
+    issues = {}
+    for (url,) in conn.execute("SELECT source_url FROM raw_signals WHERE source_url <> '' ORDER BY id DESC"):
+        if match := TOPIC_URL.fullmatch(url):
+            topics.setdefault(match[1], url)
+        elif match := GITHUB_ISSUE_URL.fullmatch(url):
+            issues.setdefault((match["repo"].lower(), match["number"]), url)
+
+    print(f"[COMMENTS] V2EX 主题={len(topics)}，GitHub Issues={len(issues)}", flush=True)
+    v2ex_count = sum(collect_replies(conn, topic, url, user_agent=USER_AGENT) for topic, url in topics.items())
+    github_count = sum(collect_issue_comments(conn, url, user_agent=USER_AGENT) for url in issues.values())
+    return v2ex_count, github_count
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Market Radar CLI (多渠道采集 + AI锐评评估 + 团队人脉提报)")
-    parser.add_argument("action", choices=["run-all", "collect", "import-csv", "clean", "evaluate", "export", "submit-idea"], default="run-all", nargs="?")
+    parser.add_argument("action", choices=["run-all", "collect", "collect-comments", "import-csv", "clean",
+                                           "evaluate", "export", "submit-idea"], default="run-all", nargs="?")
     parser.add_argument("--title", default="", help="人脉新方向标题")
     parser.add_argument("--proposer", default="团队成员", help="提报人姓名/人脉来源")
     parser.add_argument("--what", default="", help="一句话说明具体做什么产品")
@@ -646,7 +626,7 @@ def main() -> None:
     conn = get_conn()
     init_db(conn)
     from collab_utils import sync_db_from_jsonl, dump_db_to_jsonl, submit_custom_idea
-    from user_comments import archive_comments, restore_comments
+    from evidence.user_comments import archive_comments, restore_comments
     sync_db_from_jsonl(conn, BASE_WORKSPACE, insert_signal)
     restore_comments(conn, BASE_WORKSPACE)
 
@@ -677,6 +657,12 @@ def main() -> None:
         clean_and_tag_signals(conn)
         dump_db_to_jsonl(conn, BASE_WORKSPACE)
         print(f"[IMPORT-CSV] 新增信号与评论: {c_csv}")
+        return
+
+    if args.action == "collect-comments":
+        v2ex_count, github_count = collect_public_comments(conn)
+        archive_comments(conn, BASE_WORKSPACE)
+        print(f"[COMMENTS] 新增评论: V2EX={v2ex_count}，GitHub={github_count}")
         return
 
     if args.action in ("run-all", "collect"):

@@ -13,7 +13,8 @@ Roadmap 追踪（GitHub Issue #2）：`https://github.com/donghyq/market-radar/i
    - **macOS**：直接双击根目录 `Mac一键采集向导.command`（或终端执行 `python3 run_radar.py`）
    - **Windows**：装好 Python 3 后，双击根目录 `Windows一键采集向导.bat`
    - 选 `[1]` 采集 App Store、B 站等公开渠道，再选 `[6]` 生成并打开本地工作台，在信号库点「评论（N）」。
-   - 先选 `[2]` 扫码登录一次自己的闲鱼/小红书/蝉妈妈（登录态仅保存在个人电脑 `.browser_profile/`，互不干扰），再选 `[3]` 输入任意关键词即可自动抓包入库。
+   - 选 `[7]` 免登录补采库内 V2EX 主题与 GitHub Issues 的公开评论，随后打开本地工作台。
+   - 选 `[2]` 扫码保存闲鱼或蝉妈妈登录态，保存在本机 `.browser_profile/`，再选 `[3]` 采集商品或榜单。
 3. **无损合并上传**：在菜单选 `[5]`（或执行 `python3 scripts/sync_github.py`），脚本会自动拉取远端队友刚抓的数据按唯一指纹去重合并，重新编译看板并同步上线，不会互相覆盖。
 
 ---
@@ -58,7 +59,7 @@ Roadmap 追踪（GitHub Issue #2）：`https://github.com/donghyq/market-radar/i
 |  - 复利与成长核算：评估项目是否具备滚雪球壁垒（组件库/行业规则库）与团队技能沉淀  |
 |  - 市场部六维账本：成本预估 / 利润与来源 / 工期 / 人数 / 三阶段路径 / 合规风险    |
 |  - 静态单文件构建 (scripts/export_dashboard.py)：                                 |
-|    * 将 JSON 数据与 scripts/dashboard_app.js 内联编译进 scripts/template.html     |
+|    * 将 JSON 数据、脚本和样式内联到 scripts/dashboard/template.html              |
 |    * 输出根目录 index.html 与 docs/index.html (供 GitHub Pages 自动发布)          |
 +-----------------------------------------------------------------------------------+
 ```
@@ -86,16 +87,16 @@ market-radar/
 │   └── chanmama_xianyu_xhs_signals.csv # 外部平台 CSV 导表投递目录
 ├── exports/
 │   └── signals_full.csv              # 带 UTF-8 BOM 的全量信号导出表（可直接拖入 Excel/飞书）
+├── rules/                            # 可整体迁移的证据规则、执行器与使用说明
 ├── scripts/
 │   ├── radar_cli.py                  # 主命令行入口（采集、清洗、人脉提报、评估、导出）
 │   ├── discovery_scanner.py          # 跨赛道广谱主动痛点发现脚本（6大付费人群×痛点词矩阵）
 │   ├── auto_browser_collector.py     # Playwright 真机登录态复用 + XHR JSON 自动抓包器
 │   ├── collab_utils.py               # JSONL <-> SQLite 双向同步、历史归档与评分计算工具
 │   ├── export_dashboard.py           # 终端页面编译器（将 JSON 与 JS 内联打包为单文件 HTML）
-│   ├── template.html                 # 投研终端 HTML/CSS 骨架模板（无 Emoji 极简深色风格）
-│   ├── dashboard_app.js              # 投研终端前端主从视图（Master-Detail）交互逻辑
-│   ├── dashboard_config.json         # 核心立项项目与早期既有方向复盘配置
-│   └── whitepaper_config.json        # 渠道原理、导表指南与 4 大战略 Roadmap 配置
+│   ├── collectors/                   # V2EX、GitHub Issues、小众软件论坛采集模块
+│   ├── evidence/                     # 评论入库、画像和本地证据缓存
+│   └── dashboard/                    # 看板模板、交互、样式和展示配置
 └── .github/workflows/
     └── daily_radar.yml               # GitHub Actions 每日 08:30 自动增量采集与发布工作流
 ```
@@ -114,7 +115,7 @@ market-radar/
 4. **JSONL 回写与按日快照（`dump_db_to_jsonl`）**  
    清洗完成后将全量记录写回 `data/signals/signals_master.jsonl`，保留每条信号的首次发现日期 `first_seen` 与最新活跃日期 `last_seen`，同时输出 `data/archives/YYYY-MM-DD.json`。
 5. **立项合并与单文件终端编译（`export_dashboard.py`）**  
-   自动汇总 `scripts/dashboard_config.json` 与 `data/ideas/*.json` 下的所有立项方案，按总分降序排列，内联全部证据快照生成 `index.html` 与 `docs/index.html`。
+   自动汇总 `scripts/dashboard/dashboard_config.json` 与 `data/ideas/*.json` 下的所有立项方案，按总分降序排列，内联全部证据快照生成 `index.html` 与 `docs/index.html`。
 
 ---
 
@@ -206,4 +207,4 @@ python scripts/radar_cli.py export --with-comments
 
 ### 5.2 如何修改或新增立项深度评估档案？
 - **新增独立项目**：直接在 `data/ideas/` 目录下新建一个 `.json` 文件（参考 `data/ideas/AUTO-DISC-01.json` 结构，包含 `workflow_steps`、`compounding` 复利成长评估、`biz_eval` 成本与收益核算表与 `evidence_ids` 关联证据编号数组），然后运行 `python3 scripts/export_dashboard.py`。
-- **调整前端界面**：修改 `scripts/template.html`（样式与布局）或 `scripts/dashboard_app.js`（渲染逻辑），运行 `python3 scripts/export_dashboard.py` 重新编译单文件 `index.html`。
+- **调整前端界面**：修改 `scripts/dashboard/` 中的模板、样式或脚本，运行 `python3 scripts/export_dashboard.py` 重新编译单文件 `index.html`。

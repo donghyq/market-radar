@@ -23,9 +23,12 @@ import urllib.request
 from typing import List, Tuple
 
 import radar_cli
+from collectors.appinn_collector import collect_appinn
+from collectors.v2ex_comments import CHANNEL as V2EX_CHANNEL, collect_replies
 from collab_utils import dump_db_to_jsonl, sync_db_from_jsonl
+from evidence.user_comments import archive_comments, restore_comments
+from evidence_rules import default_rules
 from signal_time import epoch_time, newest_results
-from user_comments import archive_comments, restore_comments
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 SSL_CTX = ssl._create_unverified_context()
@@ -72,6 +75,9 @@ def scan_broad_wechat_and_web(conn: sqlite3.Connection) -> int:
 def scan_v2ex_pain_points(conn: sqlite3.Connection) -> int:
     """扫描 V2EX 公开热门/创造者节点中的真实独立开发与工具痛点"""
     added = 0
+    seen_replies = set()
+    rules = default_rules()
+    discovery = rules.v2ex_discovery
     for node in ["create", "programmer", "ideas"]:
         try:
             url = f"https://www.v2ex.com/api/topics/show.json?node_name={node}"
@@ -85,25 +91,31 @@ def scan_v2ex_pain_points(conn: sqlite3.Connection) -> int:
                 replies = int(it.get("replies") or 0)
                 t_url = it.get("url", "")
                 member = (it.get("member") or {}).get("username", "V2EX用户")
-                if len(title) >= 6 and (replies >= 5 or any(k in title + content for k in ["痛点", "工具", "付费", "开源", "小程序", "插件", "需求", "变现"])):
+                legacy_match = len(title) >= discovery["min_title_length"] and (replies >= discovery["min_replies"]
+                    or any(word in title + content for word in discovery["keywords"]))
+                if legacy_match or rules.evaluate({"channel": "V2EX", "title": title, "content": content})["counts_as_demand"]:
                     ok = radar_cli.insert_signal(
                         conn=conn,
-                        channel="V2EX开发者与需求社区(实时API)",
+                        channel=V2EX_CHANNEL,
                         source_tier="实时API抓取",
                         category="独立开发与新工具发现",
                         query_term=f"v2ex:{node}",
                         title=title,
                         content=content[:500] if content else title,
                         author_or_app=f"V2EX @{member}",
-                        metric_primary=f"{replies} 条真实回复",
+                        metric_primary=f"{replies} 条回复",
                         metric_secondary=f"节点: {node}",
-                        rating_or_price="真实社区痛点",
+                        rating_or_price="",
                         source_url=t_url,
                         source_published_at=published,
                         published_time_source="v2ex_topic_created",
                     )
                     if ok:
                         added += 1
+                    topic_id = it.get("id")
+                    if replies and topic_id and topic_id not in seen_replies:
+                        seen_replies.add(topic_id)
+                        collect_replies(conn, topic_id, t_url, user_agent=UA)
         except Exception as exc:
             print(f"[WARN] V2EX 采集跳过 ({node}): {exc}")
     conn.commit()
@@ -120,10 +132,12 @@ def main():
     a2 = scan_broad_bilibili(conn)
     a3 = scan_broad_wechat_and_web(conn)
     a4 = scan_v2ex_pain_points(conn)
+    appinn_topics, appinn_replies = collect_appinn(conn)
     archive_comments(conn, BASE_DIR)
     stats = radar_cli.clean_and_tag_signals(conn)
     dump_db_to_jsonl(conn, BASE_DIR)
     print(f"[DISCOVERY] 广谱主动扫描完成！新增 AppStore={a1}, B站={a2}, 微信/网页={a3}, V2EX={a4} | 当前库内总信号={stats['total']} (有效={stats['valid']})")
+    print(f"[DISCOVERY] 小众软件论坛新增主帖={appinn_topics}, 回帖={appinn_replies}")
 
 
 if __name__ == "__main__":

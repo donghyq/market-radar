@@ -169,8 +169,19 @@ function renderPersonaAndFreshness() {
   `;
 }
 
+function recordKey(s) {
+  return s.record_type === 'comment'
+    ? `comment:${encodeURIComponent(s.channel)}:${encodeURIComponent(s.comment_id || s.id)}`
+    : String(s.id);
+}
+
+function recordIdLabel(s) {
+  return `${s.record_type === 'comment' ? '评论 ' : ''}#${s.id}`;
+}
+
+const recordIdOrder = new Intl.Collator(undefined, {numeric: true});
 const SIG_MAP = Object.create(null);
-(DATA.signals || []).forEach(s => { SIG_MAP[s.id] = s; });
+(DATA.signals || []).forEach(s => { SIG_MAP[recordKey(s)] = s; });
 const {commentsByPost, postByComment} = indexSignalComments(DATA.signals || []);
 
 
@@ -181,7 +192,23 @@ function cleanText(s) {
 }
 
 function esc(s) {
-  return cleanText(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return escapeHtml(cleanText(s));
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function channelLabel(value) {
+  const channel = cleanText(value);
+  if (/^App\s*Store/i.test(channel)) return 'App Store';
+  if (/^(?:B\s*站|Bilibili)/i.test(channel)) return 'B 站';
+  if (/^GitHub/i.test(channel)) return 'GitHub';
+  if (/^Hacker\s*News/i.test(channel)) return 'Hacker News';
+  if (/^V2EX/i.test(channel)) return 'V2EX';
+  if (/^(?:小众软件论坛|Appinn Forum)/i.test(channel)) return '小众软件论坛';
+  if (/^微信公众号/.test(channel)) return '微信公众号';
+  return channel.match(/^(?:小红书|闲鱼|蝉妈妈)/)?.[0] || channel;
 }
 
 function getAllProjects() {
@@ -288,12 +315,15 @@ function renderSignals() {
   const now = Date.now();
   document.getElementById('lblSigCnt').innerText = sigs.filter(s => !s.is_noise && signalTiming(s, now).tier === '7d_hot').length;
   const allAuds = [...new Set(sigs.map(s => cleanText(s.audience_tag)).filter(Boolean))];
-  const allChs = [...new Set(sigs.map(s => cleanText(s.channel)).filter(Boolean))];
+  const allChs = [...new Set(sigs.map(s => channelLabel(s.channel)).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
   const coverage = DATA.comment_coverage;
+  const comments = coverage ? sigs.filter(s => s.record_type === 'comment') : [];
+  const intents = [...new Set(comments.flatMap(s => s.intents || []))].sort();
+  const topics = [...new Set(comments.flatMap(s => s.topic_tags || []))].sort();
 
   document.getElementById('tab-signals').innerHTML = `
     <div class="signal-controls" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">
-      <input id="qInput" style="max-width:260px;" aria-label="搜索信号" placeholder="搜索编号(#12)、标题、原文或人群..." oninput="SIG_PAGE=1;filterRows()">
+      <input id="qInput" style="max-width:260px;" aria-label="搜索信号" placeholder="搜索编号(#12)、原文或标签" oninput="SIG_PAGE=1;filterRows()">
       <select id="timeSelect" style="max-width:205px;" aria-label="按发布时效筛选" onchange="SIG_PAGE=1;filterRows()">
         <option value="24h">近 24 小时</option>
         <option value="7d" selected>近 7 天</option>
@@ -317,16 +347,21 @@ function renderSignals() {
       </select>
       <select id="noiseSelect" style="max-width:120px;" aria-label="按有效性筛选" onchange="SIG_PAGE=1;filterRows()">
         <option value="valid">有效信号</option>
+        ${coverage ? '<option value="demand">独立需求证据</option><option value="review">待核实</option><option value="promotion">推广线索</option>' : ''}
         <option value="all">含噪音</option>
       </select>
       ${coverage ? `<select id="recordSelect" aria-label="按记录类型筛选" onchange="SIG_PAGE=1;filterRows()">
         <option value="">全部记录</option><option value="comment">仅看评论</option>
         <option value="signal">仅看信号</option>
       </select>` : ''}
+      ${intents.length ? '<select id="commentIntentSelect" aria-label="按评论意图筛选" onchange="SIG_PAGE=1;filterRows()"><option value="">全部评论意图</option>'
+        + intents.map(label => '<option value="' + esc(label) + '">' + esc(label) + '</option>').join('') + '</select>' : ''}
+      ${topics.length ? '<select id="commentTopicSelect" aria-label="按评论主题筛选" onchange="SIG_PAGE=1;filterRows()"><option value="">全部评论主题</option>'
+        + topics.map(label => '<option value="' + esc(label) + '">' + esc(label) + '</option>').join('') + '</select>' : ''}
       <output id="signalCount" aria-live="polite" style="font-size:12.5px;color:var(--text-muted);"></output>
     </div>
     ${coverage?.total ? `<p id="commentCoverage" style="color:var(--text-muted);font-size:12px;">
-      标签覆盖（${coverage.total} 条评论）${Object.entries(COMMENT_LABEL_NAMES).map(([key, name]) => {
+      画像字段覆盖（${coverage.total} 条评论）${Object.entries(COMMENT_LABEL_NAMES).map(([key, name]) => {
         const n = coverage.counts[key];
         return `${name} ${n}/${coverage.total}（${(100*n/coverage.total).toFixed(1)}%）`;
       }).join(' · ')}
@@ -366,7 +401,7 @@ function renderSigPage() {
   const rowsHtml = slice.map(({signal: s, matchedComment}) => {
     const source = sourceLink(s.source_url);
     const timing = signalTiming(s, now);
-    const comments = commentsByPost.get(s.id) || [];
+    const comments = commentsByPost.get(s) || [];
     let commentTime = '';
     if (matchedComment) {
       const activity = signalTiming(matchedComment, now);
@@ -382,22 +417,22 @@ function renderSigPage() {
     return `
       <tr class="sig-row">
         <td class="signal-time">
-          <b>#${s.id}</b><br>
+          <b>${escapeHtml(recordIdLabel(s))}</b><br>
           ${freshBadge(timing.tier, signalPublishedText(s), timing.hour24)}<br>
           ${commentTime}
           <small>入库 ${esc(colDate)}</small>
         </td>
         <td>
-          <span class="pill">${esc(s.channel)}</span><br>
+          <span class="pill" title="${esc(s.channel)}">${esc(channelLabel(s.channel))}</span><br>
           <span class="aud-pill">${s.record_type === 'comment' ? '用户评论' : esc(aud)}</span>
         </td>
         <td><strong style="color:var(--text);font-weight:500;">${esc(s.author_or_app)}</strong><br><small style="color:var(--text-muted)">${esc(s.rating_or_price)}</small></td>
         <td>${s.is_noise ? '<span class="pill" style="color:#f87171;">已过滤噪音</span> ' : ''}<strong style="color:var(--text);font-weight:500;">${esc(title)}</strong><br><span style="color:var(--text-secondary)">${esc(summary)}</span></td>
         <td style="color:var(--text-secondary);">${s.record_type === 'comment'
-          ? [s.metric_primary, ...commentTagLines(s)].filter(Boolean).map(esc).join('<br>')
+          ? [s.metric_primary, ...commentLabelLines(s), ...commentTagLines(s)].filter(Boolean).map(esc).join('<br>')
           : esc(s.metric_primary) + '<br><small style="color:var(--text-muted)">' + esc(s.metric_secondary) + '</small>'}</td>
         <td>
-          <button class="btn" onclick="openSnap(${s.id})">${comments.length ? `评论（${comments.length}）` : '本地快照'}</button><br>
+          <button class="btn" data-record-key="${recordKey(s)}" onclick="openSnap(this.dataset.recordKey)">${comments.length ? `评论（${comments.length}）` : '本地快照'}</button><br>
           ${source ? `<a class="source-link" href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${source.label} ↗</a>` : ''}
         </td>
       </tr>
@@ -407,7 +442,12 @@ function renderSigPage() {
   const tbody = document.getElementById('sigTbody');
   if (tbody) tbody.innerHTML = rowsHtml || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:24px;">无匹配信号记录</td></tr>';
   const out = document.getElementById('signalCount');
-  if (out) out.textContent = `匹配 ${total} 条 · 第 ${SIG_PAGE}/${totalPages} 页`;
+  if (out) {
+    const commentTotal = DATA.comment_coverage?.total || 0;
+    const signalTotal = (DATA.signals || []).length - commentTotal;
+    const commentCount = DATA.comment_coverage ? ` / ${commentTotal} 条评论` : '';
+    out.textContent = `库内 ${signalTotal} 条信号${commentCount} · 匹配 ${total} 条 · 第 ${SIG_PAGE}/${totalPages} 页`;
+  }
   const pager = document.getElementById('sigPager');
   if (pager) {
     pager.innerHTML = `
@@ -703,6 +743,14 @@ function postKey(value) {
     const app = url.pathname.match(/\/id(\d+)\/?$/);
     if (app) return 'appstore:' + app[1];
   }
+  if (/(^|\.)v2ex\.com$/.test(url.hostname)) {
+    const topic = url.pathname.match(/^\/t\/(\d+)\/?$/);
+    if (topic) return 'v2ex:' + topic[1];
+  }
+  if (/^(?:www\.)?github\.com$/.test(url.hostname)) {
+    const issue = url.pathname.match(/^\/([\w.-]+\/[\w.-]+)\/issues\/([1-9]\d*)\/?$/i);
+    if (issue) return 'github-issue:' + issue[1].toLowerCase() + '/' + issue[2];
+  }
   return url.pathname === '/' ? '' : url.href;
 }
 
@@ -715,7 +763,7 @@ function indexSignalComments(signals) {
     const key = postKey(post.source_url);
     if (!key) continue;
     const previous = posts.get(key);
-    if (previous && key.startsWith('bilibili:')) {
+    if (previous && /^(bilibili|v2ex|github-issue):/.test(key)) {
       if (post.id < previous.id) posts.set(key, post);
     } else {
       posts.set(key, posts.has(key) ? null : post);
@@ -725,9 +773,9 @@ function indexSignalComments(signals) {
     if (comment.record_type !== 'comment') continue;
     const post = posts.get(postKey(comment.parent_url));
     if (!post) continue;
-    postByComment.set(comment.id, post);
-    if (!commentsByPost.has(post.id)) commentsByPost.set(post.id, []);
-    commentsByPost.get(post.id).push(comment);
+    postByComment.set(comment, post);
+    if (!commentsByPost.has(post)) commentsByPost.set(post, []);
+    commentsByPost.get(post).push(comment);
   }
   return {commentsByPost, postByComment};
 }
@@ -742,6 +790,15 @@ function evidenceLink(source, caption) {
 }
 
 const COMMENT_LABEL_NAMES = {age: '年龄段', ip_location: 'IP 属地', occupation: '职业', interests: '喜好'};
+const EVIDENCE_STATUS_NAMES = {eligible: '可计入独立需求证据', context: '背景线索',
+  promotional: '推广线索', unverified: '待核实', noise: '噪音'};
+
+function evidenceAssessment(s) {
+  const status = EVIDENCE_STATUS_NAMES[s.evidence_status];
+  if (!status) return '';
+  const reasons = (s.matches || []).map(({rule_id, quote}) => `${rule_id}「${quote}」`);
+  return [`证据判定：${status}（规则 ${s.rule_version}）`, ...reasons].join('\n');
+}
 
 function commentTagLines(s, includeSource = false) {
   return Object.entries(COMMENT_LABEL_NAMES).map(([key, name]) => {
@@ -751,22 +808,33 @@ function commentTagLines(s, includeSource = false) {
   });
 }
 
-function appendSnapshotComments(body, comments) {
-  if (!comments?.length) return;
-  const section = document.createElement('section');
-  const heading = document.createElement('h3');
-  heading.textContent = `评论（${comments.length}）`;
-  section.append(heading);
+function commentLabelLines(s) {
+  const lines = [];
+  if (s.intents?.length) lines.push('意图：' + s.intents.join('、'));
+  if (s.topic_tags?.length) lines.push('主题：' + s.topic_tags.join('、'));
+  return lines;
+}
+
+function renderSnapshotComments(list, comments, mode) {
   const now = Date.now();
-  const ordered = comments.map(comment => ({comment, order: signalTiming(comment, now).order}));
-  ordered.sort((a, b) => b.order - a.order || b.comment.id - a.comment.id);
+  const ordered = comments.map(comment => ({
+    comment,
+    time: signalTiming(comment, now).order,
+    labels: Number(Boolean(comment.intents?.length)) + Number(Boolean(comment.topic_tags?.length)),
+    length: mode === 'length' ? [...(comment.content || '').replace(/\s/g, '')].length : 0,
+  }));
+  ordered.sort((a, b) => (mode === 'labels' ? b.labels - a.labels : b.length - a.length)
+    || b.time - a.time || recordIdOrder.compare(b.comment.id, a.comment.id));
+  const rows = document.createDocumentFragment();
   for (const {comment} of ordered) {
     const article = document.createElement('article');
     const meta = document.createElement('strong');
-    meta.textContent = [signalPublishedText(comment), comment.author_or_app, comment.metric_primary].filter(Boolean).join(' · ');
+    meta.textContent = [recordIdLabel(comment), signalPublishedText(comment), comment.author_or_app,
+      comment.metric_primary].filter(Boolean).join(' · ');
     const content = document.createElement('div');
-    content.textContent = [comment.content, `态度：${comment.stance}`, ...commentTagLines(comment, true)].join('\n');
-    article.append(document.createElement('hr'), meta, content);
+    content.textContent = [comment.content, evidenceAssessment(comment), `态度：${comment.stance}`,
+      ...commentLabelLines(comment), ...commentTagLines(comment, true)].filter(Boolean).join('\n');
+    article.append(meta, content);
     const source = sourceLink(comment.source_url);
     if (source && source.url !== sourceLink(comment.parent_url)?.url) {
       article.append(evidenceLink(source, '查看原评论'));
@@ -776,32 +844,42 @@ function appendSnapshotComments(body, comments) {
       if (article.lastElementChild?.tagName === 'A') article.append(' · ');
       article.append(evidenceLink(profile, '用户主页'));
     }
-    section.append(article);
+    rows.append(article);
   }
-  body.append(section);
+  list.replaceChildren(rows);
+  list.scrollTop = 0;
 }
 
-function openSnap(id) {
-  const s = SIG_MAP[id];
+function openSnap(key) {
+  const s = SIG_MAP[key];
   if (!s) return;
-  document.getElementById('mTitle').textContent = `证据 #${s.id} — ${cleanText(s.title)}`;
   const isComment = s.record_type === 'comment';
+  const label = isComment ? recordIdLabel(s) : `证据 ${recordIdLabel(s)}`;
+  document.getElementById('mTitle').textContent = `${label} — ${cleanText(s.title)}`;
   const timeLabel = isComment ? '评论时间' : s.published_time_source === 'legacy_archive_date' ? '发帖日期' : '源站时间';
   const audience = isComment ? '' : ` | 人群画像：${cleanText(s.audience_tag || '通用')}`;
   document.getElementById('mMeta').textContent = `${timeLabel}：${signalPublishedText(s)} | 采集入库：${s.observed_at || cleanText(s.collected_at)}${audience} | 渠道：${cleanText(s.channel)}`;
   const body = document.getElementById('mBody');
   body.textContent = [
-    s.is_noise ? `已过滤：${cleanText(s.noise_reason) || '未记录原因'}` : '',
+    evidenceAssessment(s) || (s.is_noise ? `已过滤：${cleanText(s.noise_reason) || '未记录原因'}` : ''),
     '[采集时保存的内容]',
     String(s.content || '').trim(),
     '',
     isComment ? '[用户标签]' : '[指标与分类]',
     [s.metric_primary, s.metric_secondary, s.rating_or_price].filter(Boolean).map(cleanText).join(' · '),
     [s.category, s.audience_tag, s.persona_note].filter(Boolean).map(cleanText).join(' · '),
-    ...(isComment ? [...commentTagLines(s, true), `态度：${s.stance}`, `意图：${s.intents.join('、') || '不明确'}`] : []),
+    ...(isComment ? [...commentLabelLines(s), ...commentTagLines(s, true), `态度：${s.stance}`] : []),
   ].filter((line, i) => i !== 0 || line).join('\n');
-  appendSnapshotComments(body, commentsByPost.get(s.id));
-  body.scrollTop = 0;
+  const comments = commentsByPost.get(s) || [];
+  const commentPanel = document.getElementById('mCommentPanel');
+  const commentList = document.getElementById('mCommentList');
+  const commentSort = document.getElementById('mCommentSort');
+  commentPanel.hidden = !comments.length;
+  body.classList.toggle('with-comments', comments.length > 0);
+  document.getElementById('mCommentHeading').textContent = `评论（${comments.length}）`;
+  commentSort.value = 'time';
+  commentSort.onchange = () => renderSnapshotComments(commentList, comments, commentSort.value);
+  renderSnapshotComments(commentList, comments, commentSort.value);
   const source = sourceLink(s.source_url);
   const parent = isComment ? sourceLink(s.parent_url) : null;
   const link = document.getElementById('mLink');
@@ -820,7 +898,11 @@ function openSnap(id) {
     if (hint.hasChildNodes()) hint.append(' · ');
     hint.append(evidenceLink(profile, '用户主页'));
   }
-  document.getElementById('snapModal').showModal();
+  const dialog = document.getElementById('snapModal');
+  dialog.showModal();
+  dialog.scrollTop = 0;
+  body.scrollTop = 0;
+  commentList.scrollTop = 0;
 }
 
 function renderTechRadar() {
@@ -924,29 +1006,37 @@ function switchTab(id, btn) {
 
 function signalMatches(s, query) {
   const tags = s.profile_tags ? commentTagLines(s).join(' ') : '';
-  return `${s.id} ${s.title} ${s.content} ${s.author_or_app} ${s.audience_tag} ${tags}`.toLowerCase().includes(query);
+  return [s.id, s.title, s.content, s.author_or_app, s.audience_tag, tags,
+    ...commentLabelLines(s)].join(' ').toLowerCase().includes(query);
 }
 
 function filterRows() {
   const sigs = DATA.signals || [];
   const q = (document.getElementById('qInput')?.value || '').trim().toLowerCase();
-  const id = q.match(/^#(-?\d+)$/)?.[1];
+  const id = q.startsWith('#') ? q.slice(1) : '';
   const ch = document.getElementById('chSelect')?.value || '';
   const aud = document.getElementById('audSelect')?.value || '';
   const tMode = document.getElementById('timeSelect')?.value || '7d';
   const sortMode = document.getElementById('sortSelect')?.value || 'post';
   const noise = document.getElementById('noiseSelect')?.value || 'valid';
   const recordType = document.getElementById('recordSelect')?.value || '';
+  const intent = document.getElementById('commentIntentSelect')?.value || '';
+  const topic = document.getElementById('commentTopicSelect')?.value || '';
   const now = Date.now();
-  const timing = new Map(sigs.map(s => [s.id, signalTiming(s, now)]));
-  const noiseMatches = s => noise === 'all' || Boolean(s.is_noise) === (noise === 'noise');
+  const timing = new Map(sigs.map(s => [s, signalTiming(s, now)]));
+  const noiseMatches = s => {
+    if (noise === 'demand') return s.counts_as_demand === true;
+    if (noise === 'review') return s.evidence_status === 'unverified';
+    if (noise === 'promotion') return s.evidence_status === 'promotional';
+    return noise === 'all' || Boolean(s.is_noise) === (noise === 'noise');
+  };
   const displayRow = s => {
-    const post = !recordType && !id ? postByComment.get(s.id) : null;
+    const post = !recordType && !id && !intent && !topic && ['all', 'valid', 'noise'].includes(noise) ? postByComment.get(s) : null;
     return post && noiseMatches(post) ? post : s;
   };
 
   const matches = sigs.filter(s => {
-    const {tier: f, hour24} = timing.get(s.id);
+    const {tier: f, hour24} = timing.get(s);
     let timeOk = true;
     if (tMode === 'active180') timeOk = !['stale_archive', 'recent_unverified'].includes(f);
     else if (tMode === '24h') timeOk = hour24;
@@ -957,11 +1047,14 @@ function filterRows() {
     if (!timeOk && !id) return false;
     if (!noiseMatches(s)) return false;
     const post = displayRow(s);
-    if (ch && cleanText(s.channel) !== ch && cleanText(post.channel) !== ch) return false;
+    if (ch && channelLabel(s.channel) !== ch && channelLabel(post.channel) !== ch) return false;
     if (recordType && (s.record_type || 'signal') !== recordType) return false;
+    if ((intent || topic) && s.record_type !== 'comment') return false;
+    if (intent && !s.intents?.includes(intent)) return false;
+    if (topic && !s.topic_tags?.includes(topic)) return false;
     if (aud && cleanText(s.audience_tag) !== aud && cleanText(post.audience_tag) !== aud) return false;
     if (q) {
-      if (id) return String(s.id) === id;
+      if (id) return String(s.id).toLowerCase() === id;
       return signalMatches(s, q) || (post !== s && signalMatches(post, q));
     }
     return true;
@@ -969,17 +1062,18 @@ function filterRows() {
   const rows = new Map();
   for (const match of matches) {
     const signal = displayRow(match);
-    if (!rows.has(signal.id)) rows.set(signal.id, {signal, matchedComment: null});
-    const row = rows.get(signal.id);
-    if (match !== signal && (!row.matchedComment || timing.get(match.id).order > timing.get(row.matchedComment.id).order)) {
+    if (!rows.has(signal)) rows.set(signal, {signal, matchedComment: null});
+    const row = rows.get(signal);
+    if (match !== signal && (!row.matchedComment || timing.get(match).order > timing.get(row.matchedComment).order)) {
       row.matchedComment = match;
     }
   }
   const sortTime = ({signal, matchedComment}) => {
-    const commentTime = timing.get(matchedComment?.id)?.order;
-    return sortMode === 'comment' && Number.isFinite(commentTime) ? commentTime : timing.get(signal.id).order;
+    const commentTime = timing.get(matchedComment)?.order;
+    return sortMode === 'comment' && Number.isFinite(commentTime) ? commentTime : timing.get(signal).order;
   };
-  FILTERED_SIGS = [...rows.values()].sort((a, b) => sortTime(b) - sortTime(a) || a.signal.id - b.signal.id);
+  FILTERED_SIGS = [...rows.values()].sort((a, b) => sortTime(b) - sortTime(a)
+    || recordIdOrder.compare(a.signal.id, b.signal.id));
   renderSigPage();
 }
 

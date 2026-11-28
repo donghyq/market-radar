@@ -126,7 +126,7 @@ function renderProjects() {
     <div class="research-stats" aria-label="本期数据概况">
       <div><span>候选方向</span><strong id="kpiProjects">${list.length}</strong><small>包含本机提报</small></div>
       <div><span>有效信号</span><strong>${valid}</strong><small>采集 ${signals.length} · 过滤 ${signals.length - valid}</small></div>
-      <div><span>实际来源渠道</span><strong>${new Set(signals.map(s => s.channel).filter(Boolean)).size}</strong><small>按入库渠道统计</small></div>
+      <div><span>实际来源渠道</span><strong>${new Set(signals.map(s => channelLabel(s.channel)).filter(Boolean)).size}</strong><small>按来源平台统计</small></div>
       <div><span>已归档批次</span><strong>${archived}</strong><small>按采集批次归档</small></div>
     </div>
     ${list.length ? workMode === 'matrix' ? renderMatrix(list) : `
@@ -328,7 +328,7 @@ function renderLinkedEvidence(p) {
   const evidence = evidenceFor(p);
   const missing = new Set(p.evidence_ids || []).size - evidence.length;
   const active = evidence.filter(s => !s.is_noise);
-  const kinds = new Set(active.map(s => s.channel).filter(Boolean));
+  const kinds = new Set(active.map(s => channelLabel(s.channel)).filter(Boolean));
   const rows = evidence.map(s => `
     <button type="button" class="evidence-item" onclick="openSnap(${Number(s.id)})">
       <span class="evidence-meta">#${Number(s.id)} · 时间 ${esc(signalPublishedText(s))}${signalTiming(s).tier === 'stale_archive' ? ' (超半年旧帖)' : ''} · ${esc(s.audience_tag || evidenceKind(s))}</span>

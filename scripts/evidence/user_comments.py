@@ -5,11 +5,15 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from collab_utils import atomic_text
-from comment_profiles import profile_evidence
+from evidence_rules import platform_name
 from signal_time import observed_now, source_time
+
+from .comment_profiles import profile_evidence
+from .evidence_cache import assess_records
 
 
 COMMENT_ARCHIVE = Path(".market-radar/comments.jsonl")
+CONTEXT_FIELDS = ("thread_id", "reply_to_id", "author_id", "app_version", "source_updated_at")
 
 
 def init_comments(conn):
@@ -35,6 +39,9 @@ def init_comments(conn):
         conn.execute("ALTER TABLE raw_comments ADD COLUMN profile_evidence TEXT NOT NULL DEFAULT '{}'")
     if "source_metric" not in columns:
         conn.execute("ALTER TABLE raw_comments ADD COLUMN source_metric TEXT NOT NULL DEFAULT ''")
+    for field in CONTEXT_FIELDS:
+        if field not in columns:
+            conn.execute(f"ALTER TABLE raw_comments ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
 
 
 def http_url(value):
@@ -48,7 +55,7 @@ def http_url(value):
     return ""
 
 
-def save_comment(conn, record):
+def save_comment(conn, record, *, refresh=False):
     channel = (record.get("channel") or "").strip()
     comment_id = (record.get("comment_id") or "").strip()
     content = record.get("content") or ""
@@ -59,29 +66,57 @@ def save_comment(conn, record):
     value, precision = source_time(record.get("commented_at", ""))
     time_source = record.get("comment_time_source") or ""
     profile_url = http_url(record.get("author_profile_url"))
+    source_url = http_url(record.get("source_url")) or parent_url
+    updated_at, _ = source_time(record.get("source_updated_at", ""))
+    thread_id, reply_to_id, author_id, app_version = (str(record.get(field) or "").strip()
+                                                     for field in CONTEXT_FIELDS[:-1])
+    context = (thread_id, reply_to_id, author_id, app_version)
     evidence = profile_evidence(record)
     cursor = conn.execute(
         """INSERT OR IGNORE INTO raw_comments (
                channel, comment_id, parent_url, source_url, content, author_or_app,
                author_profile_url, commented_at, comment_time_precision, comment_time_source, observed_at,
-               profile_evidence, source_metric
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               profile_evidence, source_metric, thread_id, reply_to_id, author_id, app_version, source_updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
-            channel, comment_id, parent_url, http_url(record.get("source_url")) or parent_url,
+            channel, comment_id, parent_url, source_url,
             content, record.get("author_or_app") or "", profile_url,
             value, precision, time_source if value else "",
             record.get("observed_at") or observed_now(),
             json.dumps(evidence, ensure_ascii=False),
             record.get("source_metric") or "",
+            *context, updated_at,
         ),
     )
     if cursor.rowcount:
         return True
 
+    if refresh and updated_at:
+        conn.execute("""UPDATE raw_comments SET content=?, reply_to_id=?, source_updated_at=?,
+              app_version=COALESCE(NULLIF(?,''),app_version),
+              source_metric=COALESCE(NULLIF(?,''),source_metric),
+              commented_at=COALESCE(NULLIF(?,''),commented_at),
+              comment_time_precision=CASE WHEN ?<>'' THEN ? ELSE comment_time_precision END,
+              comment_time_source=COALESCE(NULLIF(?,''),comment_time_source)
+            WHERE channel=? AND comment_id=? AND parent_url=? AND
+              (source_updated_at='' OR julianday(source_updated_at)<julianday(?))""",
+            (content, reply_to_id, updated_at, app_version, record.get("source_metric") or "",
+             value, value, precision, time_source if value else "", channel, comment_id, parent_url, updated_at),
+        )
     conn.execute(
-        """UPDATE raw_comments SET author_profile_url=?
-           WHERE channel=? AND comment_id=? AND parent_url=? AND author_profile_url='' AND ? <> ''""",
-        (profile_url, channel, comment_id, parent_url, profile_url),
+        """UPDATE raw_comments SET
+            author_profile_url=COALESCE(NULLIF(author_profile_url,''),?),
+            source_url=CASE WHEN source_url=parent_url THEN ? ELSE source_url END,
+            thread_id=COALESCE(NULLIF(thread_id,''),?),
+            reply_to_id=COALESCE(NULLIF(reply_to_id,''),?),
+            author_id=COALESCE(NULLIF(author_id,''),?),
+            app_version=COALESCE(NULLIF(app_version,''),?)
+           WHERE channel=? AND comment_id=? AND parent_url=? AND (
+              (author_profile_url='' AND ?<>'') OR (source_url=parent_url AND ?<>parent_url)
+              OR (thread_id='' AND ?<>'') OR (reply_to_id='' AND ?<>'') OR (author_id='' AND ?<>'')
+              OR (app_version='' AND ?<>'')
+           )""",
+        (profile_url, source_url, *context, channel, comment_id, parent_url, profile_url, source_url, *context),
     )
     if evidence:
         row = conn.execute(
@@ -104,6 +139,16 @@ def load_comments(conn):
     for comment in comments:
         comment["profile_evidence"] = json.loads(comment["profile_evidence"])
     return comments
+
+
+def assess_comments(conn, comments):
+    if not comments:
+        return []
+    platforms = {platform_name(comment) for comment in comments}
+    rows = conn.execute("""SELECT id, channel, title, content, source_url, author_or_app
+        FROM raw_signals WHERE source_url <> '' ORDER BY id""")
+    posts = [post for row in rows if platform_name(post := dict(row)) in platforms]
+    return assess_records(conn, comments, posts=posts)
 
 
 def restore_comments(conn, base_dir):

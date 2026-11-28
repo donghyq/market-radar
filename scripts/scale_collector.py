@@ -21,10 +21,13 @@ import urllib.request
 from typing import Any, Dict, List, Tuple
 
 import radar_cli
+from collectors.github_issue_comments import collect_issue_comments
+from collectors.v2ex_comments import CHANNEL as V2EX_CHANNEL, collect_replies
 from collab_utils import dump_db_to_jsonl, sync_db_from_jsonl
+from evidence.user_comments import archive_comments, restore_comments
+from evidence_rules import github_issue_excerpt
 from persona_and_freshness import ensure_columns, enrich_all_signals
 from signal_time import epoch_time
-from user_comments import archive_comments, restore_comments
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 SSL_CTX = ssl._create_unverified_context()
@@ -112,13 +115,13 @@ def fetch_github_issues_batch(repo_info: Tuple[str, str]) -> List[Dict[str, str]
         with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as resp:
             issues = json.loads(resp.read().decode("utf-8", errors="ignore"))
         for iss in issues:
-            if "pull_request" in iss:
+            if "pull_request" in iss or (iss.get("user") or {}).get("type") == "Bot":
                 continue
             pub_dt = (iss.get("created_at") or iss.get("updated_at") or "")[:10]
             if not is_within_days(pub_dt, 180):
                 continue
             title = radar_cli.strip_html(iss.get("title", ""))
-            body = radar_cli.strip_html(iss.get("body") or "")[:380]
+            body = github_issue_excerpt(iss.get("body") or "")[:1000]
             if len(title + body) < 25:
                 continue
             cmts = int(iss.get("comments") or 0)
@@ -128,14 +131,15 @@ def fetch_github_issues_batch(repo_info: Tuple[str, str]) -> List[Dict[str, str]
                 "category": category,
                 "query_term": repo,
                 "title": f"[开源痛点 Issue] {title[:110]}",
-                "content": f"仓库 {repo} 用户高频需求/报错：{title}。详情摘要：{body}",
+                "content": body,
                 "author": f"{repo} #{iss.get('number')}",
                 "m1": f"{cmts} 条跟帖讨论",
                 "m2": "Open Issue",
-                "price": "开发者/复刻真实卡点",
+                "price": "",
                 "url": iss.get("html_url", f"https://github.com/{repo}/issues"),
                 "pub": pub_dt,
                 "source_pub": iss.get("created_at") or "",
+                "has_issue_comments": bool(cmts),
             })
     except Exception:
         pass
@@ -209,7 +213,7 @@ def fetch_v2ex_nodes() -> List[Dict[str, str]]:
                 replies = int(it.get("replies") or 0)
                 member = (it.get("member") or {}).get("username", "V2EX")
                 out.append({
-                    "channel": "V2EX开发者与需求社区(实时API)",
+                    "channel": V2EX_CHANNEL,
                     "source_tier": "实时API抓取",
                     "category": "独立开发与工具痛点",
                     "query_term": f"v2ex:{node}",
@@ -218,10 +222,11 @@ def fetch_v2ex_nodes() -> List[Dict[str, str]]:
                     "author": f"V2EX @{member}",
                     "m1": f"{replies} 条回复",
                     "m2": f"节点: {node}",
-                    "price": "社区真实需求",
+                    "price": "",
                     "url": it.get("url", ""),
                     "pub": pub_dt,
                     "source_pub": epoch_time(ts),
+                    "v2ex_topic_id": it.get("id") if replies else None,
                 })
         except Exception:
             pass
@@ -311,6 +316,10 @@ def main():
         )
         if ok:
             inserted += 1
+        if rec.get("v2ex_topic_id"):
+            collect_replies(conn, rec["v2ex_topic_id"], rec["url"], user_agent=UA)
+        if rec.get("has_issue_comments"):
+            collect_issue_comments(conn, rec["url"], user_agent=UA)
     conn.commit()
     archive_comments(conn, BASE_DIR)
 

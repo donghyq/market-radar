@@ -122,10 +122,34 @@
 #tab-signals td.signal-time { font-family: var(--mono); color: var(--text-muted); }
 #tab-signals .signal-time small { font-size: 10.5px; }
 #tab-signals td:nth-child(4) { overflow-wrap: anywhere; }
-.modal-mask { position: fixed; inset: 0; border: 0; margin: auto; color: var(--text); background: transparent; width: min(100%, 760px); max-height: 100%; max-width: 100%; }
+.modal-mask {
+  --modal-gutter: clamp(8px, 2vw, 20px);
+  display: none; position: fixed; inset: 0; border: 0; margin: auto; padding: var(--modal-gutter);
+  color: var(--text); background: transparent; width: min(100%, 760px); max-height: 100%; max-width: 100%;
+}
 .modal-mask[open] { display: block; }
 .modal-mask::backdrop { background: rgba(0,0,0,.72); }
-.modal { margin: 0 auto; overflow-wrap: anywhere; }
+.modal {
+  display: flex; flex-direction: column; gap: 10px;
+  margin: 0 auto; max-width: 680px; max-height: calc(100dvh - 2 * var(--modal-gutter));
+  padding: clamp(12px, 3vw, 24px); background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; overflow-wrap: anywhere;
+}
+.modal-pre, .snapshot-comment-list {
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+  color: var(--text-secondary); font-size: 13px; white-space: pre-wrap;
+  overflow-y: auto; overscroll-behavior-y: contain;
+}
+.modal-pre { min-height: 56px; max-height: 380px; }
+.modal-pre.with-comments { flex-shrink: 0; max-height: min(42dvh, 380px); }
+.snapshot-comments { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.snapshot-comments[hidden] { display: none; }
+.snapshot-comments-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.snapshot-comments-header h3 { margin: 0; font-size: 14px; }
+.snapshot-comments-header select { width: auto; max-width: 64%; }
+.snapshot-comment-list { min-height: 0; max-height: min(30dvh, 260px); }
+.snapshot-comment-list article + article { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+.snapshot-comment-list strong { color: var(--text); }
 .modal-links { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 12px; }
 #mHint { margin-right: 12px; }
 #mLink { flex: none; }

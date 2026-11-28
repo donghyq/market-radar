@@ -32,20 +32,33 @@ def ensure_playwright():
         return res.returncode == 0
 
 
+def open_local_workbench():
+    if run_script("radar_cli.py", ["export", "--with-comments"]):
+        print("本地工作台生成失败，请查看上方错误。")
+        return
+    html_file = ROOT / ".market-radar" / "index.html"
+    if not html_file.is_file():
+        print("未找到生成的本地工作台。")
+        return
+    webbrowser.open(html_file.as_uri())
+    print("已在默认浏览器打开:", html_file)
+
+
 def menu():
     while True:
         print("\n============================================================")
         print("  Market Radar · 团队市场信号采集与协同总台")
         print("============================================================")
         print("  [1] 免登录快速采集公开渠道 (AppStore差评 + B站 + 微信 + GitHub新物种)")
-        print("  [2] 首次扫码保存我自己的 闲鱼 / 蝉妈妈（小红书已熔断防账号预警） 登录态 (仅存本机不外泄)")
-        print("  [3] 按自定义关键词抓取 闲鱼价格想要数 / 蝉妈妈榜单（低频拟人安全模式）")
+        print("  [2] 首次扫码保存闲鱼 / 蝉妈妈登录态（用于商品和榜单采集）")
+        print("  [3] 使用本机登录态采集闲鱼价格、想要数和蝉妈妈榜单")
         print("  [4] 查看或添加团队长期监测词库 (config/watch_keywords.json)")
         print("  [5] 将我本机新抓的数据与团队 GitHub 总库安全合并并发布线上看板")
         print("  [6] 生成并打开本地最新工作台（含评论）")
+        print("  [7] 免登录补采库内 V2EX / GitHub Issues 的公开评论并打开本地工作台")
         print("  [0] 退出")
         print("------------------------------------------------------------")
-        choice = input("请输入功能编号 [0-6] 并回车: ").strip()
+        choice = input("请输入功能编号 [0-7] 并回车: ").strip()
 
         if choice == "0":
             print("已退出。")
@@ -61,7 +74,7 @@ def menu():
             if not ensure_playwright():
                 continue
             kw = input("\n请输入你想抓取的关键词（多个词用逗号隔开，直接回车则使用团队默认词库）:\n> ").strip()
-            tg = input("请选择抓取平台 [直接回车=全部安全平台(xianyu,chanmama) / 仅闲鱼输入 xianyu]:\n> ").strip()
+            tg = input("请选择采集平台 [直接回车=闲鱼和蝉妈妈 / 仅闲鱼输入 xianyu]:\n> ").strip()
             args = ["--collect"]
             if tg:
                 args += ["--targets", tg]
@@ -82,18 +95,13 @@ def menu():
         elif choice == "5":
             print("\n正在拉取团队远端最新数据、执行无损去重合并并同步至 GitHub...")
             run_script("sync_github.py")
-        elif choice == "6":
-            if run_script("radar_cli.py", ["export", "--with-comments"]):
-                print("本地工作台生成失败，请查看上方错误。")
+        elif choice in ("6", "7"):
+            if choice == "7" and run_script("radar_cli.py", ["collect-comments"]):
+                print("公开评论采集失败，请查看上方错误。")
                 continue
-            html_file = ROOT / ".market-radar" / "index.html"
-            if not html_file.is_file():
-                print("未找到生成的本地工作台。")
-                continue
-            webbrowser.open(html_file.as_uri())
-            print("已在默认浏览器打开:", html_file)
+            open_local_workbench()
         else:
-            print("无效选项，请输入 0~6。")
+            print("无效选项，请输入 0~7。")
 
 
 if __name__ == "__main__":

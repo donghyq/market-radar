@@ -136,7 +136,7 @@ def synthesize_emergent_ideas(conn: sqlite3.Connection, base_dir: pathlib.Path) 
     """
     ideas_dir = base_dir / "data" / "ideas"
     ideas_dir.mkdir(parents=True, exist_ok=True)
-    cfg_path = base_dir / "scripts" / "dashboard_config.json"
+    cfg_path = base_dir / "scripts" / "dashboard" / "dashboard_config.json"
 
     used_ids = set()
     existing_titles = set()

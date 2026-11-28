@@ -120,13 +120,9 @@
   input:focus, select:focus { outline: none; border-color: var(--accent); }
   .field-lbl { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
 
-  /* Modal */
-  .modal-mask { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 999; align-items: center; justify-content: center; padding: 20px; }
-  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; max-width: 680px; width: 100%; padding: 24px; }
-  .modal-pre { background: var(--bg); padding: 14px; border-radius: 6px; border: 1px solid var(--border); white-space: pre-wrap; font-size: 13px; color: var(--text-secondary); margin: 14px 0; max-height: 380px; overflow-y: auto; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--bg); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-secondary); }
 </style>
-<link rel="stylesheet" href="scripts/workstation.css">
+<link rel="stylesheet" href="workstation.css">
 </head>
 <body>
 <div class="shell">
@@ -169,10 +165,21 @@
   <div class="modal">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
       <strong id="mTitle" style="font-size:15px;">证据快照</strong>
-      <form method="dialog"><button class="btn">关闭</button></form>
+      <form method="dialog"><button class="btn" autofocus>关闭</button></form>
     </div>
     <div id="mMeta" style="font-size:12px;color:var(--text-muted);margin-top:6px;"></div>
-    <div class="modal-pre" id="mBody"></div>
+    <div class="modal-pre" id="mBody" role="region" aria-label="快照正文" tabindex="0"></div>
+    <section class="snapshot-comments" id="mCommentPanel" aria-labelledby="mCommentHeading" hidden>
+      <div class="snapshot-comments-header">
+        <h3 id="mCommentHeading"></h3>
+        <select id="mCommentSort" aria-label="评论排序">
+          <option value="time">时间最新</option>
+          <option value="labels">标签明确优先</option>
+          <option value="length">字数最多</option>
+        </select>
+      </div>
+      <div class="snapshot-comment-list" id="mCommentList" role="region" aria-label="评论列表" tabindex="0"></div>
+    </section>
     <div class="modal-links">
       <span id="mHint" style="color:var(--text-muted);"></span>
       <a id="mLink" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:none;"></a>
@@ -183,7 +190,7 @@
 <script>
 const DATA = __RADAR_DATA_JSON__;
 </script>
-<script src="scripts/dashboard_app.js"></script>
-<script src="scripts/research_workstation.js"></script>
+<script src="dashboard_app.js"></script>
+<script src="research_workstation.js"></script>
 </body>
 </html>
