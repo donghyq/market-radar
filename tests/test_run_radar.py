@@ -13,6 +13,22 @@ import run_radar
 
 
 class RadarMenuTest(unittest.TestCase):
+    def test_direct_windows_and_mac_commands_dispatch_actions(self):
+        with patch("run_radar.run_script", return_value=7) as runner, patch("run_radar.ensure_playwright", return_value=True):
+            self.assertEqual(run_radar.main(["export-local"]), 7)
+            self.assertEqual(run_radar.main(["collect-consumer-reviews"]), 7)
+            self.assertEqual(run_radar.main(["xianyu-once"]), 7)
+        self.assertEqual(runner.call_args_list, [
+            call("radar_cli.py", ["export", "--with-comments"]),
+            call("radar_cli.py", ["collect-consumer-reviews"]),
+            call("auto_browser_collector.py", ["--login", "--collect", "--consumer-once"]),
+        ])
+
+    def test_daily_command_stops_on_first_failed_step(self):
+        with patch("run_radar.run_script", side_effect=[0, 7]) as runner:
+            self.assertEqual(run_radar.main(["run-all"]), 7)
+        self.assertEqual(runner.call_args_list, [call("tech_radar.py"), call("auto_discover_ideas.py")])
+
     def test_collect_then_open_local_comments(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)
@@ -58,6 +74,45 @@ class RadarMenuTest(unittest.TestCase):
 
             browser.assert_not_called()
             self.assertIn("本地工作台生成失败", output.getvalue())
+
+    def test_collect_public_comments_then_export_in_the_same_menu_option(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            page = root / ".market-radar" / "index.html"
+
+            def run_script(name, args):
+                if args == ["export", "--with-comments"]:
+                    page.parent.mkdir()
+                    page.write_text("local workbench", encoding="utf-8")
+                return 0
+
+            with (
+                patch("run_radar.ROOT", root),
+                patch("run_radar.run_script", side_effect=run_script) as runner,
+                patch("run_radar.webbrowser.open") as browser,
+                patch("builtins.input", side_effect=["7", "0"]),
+                redirect_stdout(io.StringIO()),
+            ):
+                run_radar.menu()
+
+            self.assertEqual(runner.call_args_list, [
+                call("radar_cli.py", ["collect-comments"]),
+                call("radar_cli.py", ["export", "--with-comments"]),
+            ])
+            browser.assert_called_once_with(page.as_uri())
+
+    def test_failed_public_comment_collection_does_not_export_or_open(self):
+        with (
+            patch("run_radar.run_script", return_value=1) as runner,
+            patch("run_radar.webbrowser.open") as browser,
+            patch("builtins.input", side_effect=["7", "0"]),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            run_radar.menu()
+
+        runner.assert_called_once_with("radar_cli.py", ["collect-comments"])
+        browser.assert_not_called()
+        self.assertIn("公开评论采集失败", output.getvalue())
 
 
 if __name__ == "__main__":

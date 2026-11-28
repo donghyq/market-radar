@@ -20,9 +20,11 @@ import urllib.request
 from typing import List, Tuple
 
 import radar_cli
+from collectors.github_issue_comments import collect_issue_comments
 from collab_utils import dump_db_to_jsonl, sync_db_from_jsonl
+from evidence.user_comments import archive_comments, restore_comments
+from evidence_rules import github_issue_excerpt
 from signal_time import epoch_time
-from user_comments import archive_comments, restore_comments
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 SSL_CTX = ssl._create_unverified_context()
@@ -74,12 +76,12 @@ def deep_scan_github_inflection(conn: sqlite3.Connection) -> List[int]:
             with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as resp:
                 issues = json.loads(resp.read().decode("utf-8", errors="ignore"))
             for iss in issues:
-                if "pull_request" in iss:
+                if "pull_request" in iss or (iss.get("user") or {}).get("type") == "Bot":
                     continue
                 i_title = radar_cli.strip_html(iss.get("title", ""))
-                i_body = radar_cli.strip_html(iss.get("body") or "")[:350]
+                i_body = github_issue_excerpt(iss.get("body") or "")
                 cmts = int(iss.get("comments") or 0)
-                u_login = (iss.get("user") or {}).get("login", "dev")
+                issue_url = iss.get("html_url", f"https://github.com/{repo}/issues")
                 radar_cli.insert_signal(
                     conn=conn,
                     channel="GitHub真实Issue卡点(深潜API)",
@@ -87,13 +89,15 @@ def deep_scan_github_inflection(conn: sqlite3.Connection) -> List[int]:
                     category="具身智能与AI宠物硬件",
                     query_term=repo,
                     title=f"[复刻卡点 Issue] {i_title}",
-                    content=f"开发者 @{u_login} 在 {repo} 反馈实机/训练卡点：{i_title}。详情摘要：{i_body if i_body else '无附加正文'}",
+                    content=i_body,
                     author_or_app=f"{repo} #{iss.get('number')}",
                     metric_primary=f"{cmts} 条讨论",
                     metric_secondary=f"状态: {iss.get('state')}",
-                    rating_or_price="真实研发痛点",
-                    source_url=iss.get("html_url", f"https://github.com/{repo}/issues"),
+                    rating_or_price="",
+                    source_url=issue_url,
                 )
+                if cmts:
+                    collect_issue_comments(conn, issue_url, user_agent=UA)
         except Exception as exc:
             print(f"[WARN] GitHub Issue 抓取跳过 ({repo}): {exc}")
 

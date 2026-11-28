@@ -11,9 +11,11 @@ Roadmap 追踪（GitHub Issue #2）：`https://github.com/donghyq/market-radar/i
 1. **拉取仓库并获得权限**：管理员在 GitHub 仓库 `Settings -> Collaborators` 中添加成员账号后，成员克隆仓库并确保已登录 `gh auth login`。
 2. **零命令菜单式采集**：
    - **macOS**：直接双击根目录 `Mac一键采集向导.command`（或终端执行 `python3 run_radar.py`）
-   - **Windows**：装好 Python 3 后，双击根目录 `Windows一键采集向导.bat`
-   - 选 `[1]` 采集 App Store、B 站等公开渠道，再选 `[6]` 生成并打开本地工作台，在信号库点「评论（N）」。
-   - 先选 `[2]` 扫码登录一次自己的闲鱼/小红书/蝉妈妈（登录态仅保存在个人电脑 `.browser_profile/`，互不干扰），再选 `[3]` 输入任意关键词即可自动抓包入库。
+   - **Windows**：使用 Python 3.10 或更新版本，双击根目录 `Windows一键采集向导.bat`。
+   - 选 `[1]` 采集 App Store、Google Play、TapTap 等公开渠道，再选 `[6]` 生成并打开本地工作台。在「信号与评论」里分开查看两类记录，打开「信号」中的「评论（N）」可查看完整快照。
+   - 选 `[7]` 免登录补采库内 V2EX 主题与 GitHub Issues 的公开评论，随后打开本地工作台。
+   - 选 `[8]` 做闲鱼消费服务单轮采样，在同一浏览器窗口扫码登录，回到终端输入 `y` 开始。选 `[2]` 可保存闲鱼或蝉妈妈登录态，选 `[3]` 可使用保存的登录态采集商品或榜单。
+   - 选 `[9]` 免登录补采已收录消费产品的公开评价。单品单轮最多 200 条，覆盖公开样本中的各评分和日期。评价少或暂时读不到的产品仍保留在信号库。
 3. **无损合并上传**：在菜单选 `[5]`（或执行 `python3 scripts/sync_github.py`），脚本会自动拉取远端队友刚抓的数据按唯一指纹去重合并，重新编译看板并同步上线，不会互相覆盖。
 
 ---
@@ -28,7 +30,7 @@ Roadmap 追踪（GitHub Issue #2）：`https://github.com/donghyq/market-radar/i
 +-----------------------------------------------------------------------------------+
 |                               1. 多源信号采集层                                   |
 |  - 免登录 API 采集 (scripts/radar_cli.py & scripts/discovery_scanner.py)          |
-|    * Apple 中国区 App Store (iTunes Search + CustomerReviews 1~3星差评 JSON 流)   |
+|    * Apple 中国区 App Store (iTunes Search + CustomerReviews 各星级公开评价)      |
 |    * Bilibili (Web Search + Reply API，计算 Favorites/Play 收藏率与高赞痛点评论)  |
 |    * 微信公众号 (搜狗微信检索解析，提取一线变现复盘与行业实测数据)                |
 |    * V2EX 开发者与需求节点 (Topics API，捕获独立开发与工具求购信号)               |
@@ -58,7 +60,7 @@ Roadmap 追踪（GitHub Issue #2）：`https://github.com/donghyq/market-radar/i
 |  - 复利与成长核算：评估项目是否具备滚雪球壁垒（组件库/行业规则库）与团队技能沉淀  |
 |  - 市场部六维账本：成本预估 / 利润与来源 / 工期 / 人数 / 三阶段路径 / 合规风险    |
 |  - 静态单文件构建 (scripts/export_dashboard.py)：                                 |
-|    * 将 JSON 数据与 scripts/dashboard_app.js 内联编译进 scripts/template.html     |
+|    * 将 JSON 数据、脚本和样式内联到 scripts/dashboard/template.html              |
 |    * 输出根目录 index.html 与 docs/index.html (供 GitHub Pages 自动发布)          |
 +-----------------------------------------------------------------------------------+
 ```
@@ -86,16 +88,16 @@ market-radar/
 │   └── chanmama_xianyu_xhs_signals.csv # 外部平台 CSV 导表投递目录
 ├── exports/
 │   └── signals_full.csv              # 带 UTF-8 BOM 的全量信号导出表（可直接拖入 Excel/飞书）
+├── rules/                            # 可整体迁移的证据规则、执行器与使用说明
 ├── scripts/
 │   ├── radar_cli.py                  # 主命令行入口（采集、清洗、人脉提报、评估、导出）
-│   ├── discovery_scanner.py          # 跨赛道广谱主动痛点发现脚本（6大付费人群×痛点词矩阵）
+│   ├── discovery_scanner.py          # 消费级虚拟产品与服务的公开渠道采集
 │   ├── auto_browser_collector.py     # Playwright 真机登录态复用 + XHR JSON 自动抓包器
 │   ├── collab_utils.py               # JSONL <-> SQLite 双向同步、历史归档与评分计算工具
 │   ├── export_dashboard.py           # 终端页面编译器（将 JSON 与 JS 内联打包为单文件 HTML）
-│   ├── template.html                 # 投研终端 HTML/CSS 骨架模板（无 Emoji 极简深色风格）
-│   ├── dashboard_app.js              # 投研终端前端主从视图（Master-Detail）交互逻辑
-│   ├── dashboard_config.json         # 核心立项项目与早期既有方向复盘配置
-│   └── whitepaper_config.json        # 渠道原理、导表指南与 4 大战略 Roadmap 配置
+│   ├── collectors/                   # V2EX、GitHub Issues、小众软件论坛采集模块
+│   ├── evidence/                     # 评论入库、画像和本地证据缓存
+│   └── dashboard/                    # 看板模板、交互、样式和展示配置
 └── .github/workflows/
     └── daily_radar.yml               # GitHub Actions 每日 08:30 自动增量采集与发布工作流
 ```
@@ -107,14 +109,14 @@ market-radar/
 1. **历史基线恢复（`sync_db_from_jsonl`）**  
    每次执行命令时，先读取 `data/signals/signals_master.jsonl` 重建或合并至本地 `radar.db`，确保多人协作时老数据不丢失。
 2. **多源增量抓取（`collect` / `discovery_scanner.py` / `auto_browser_collector.py`）**  
-   依次拉取 App Store 1~3 星差评、B 站高收藏比视频与热门评论、搜狗微信实战拆解文章、V2EX 需求贴及 `inbox/*.csv`。利用 SQLite `UNIQUE(channel, title, author_or_app)` 约束自动忽略完全重复的数据。
+   默认采集 App Store 各星级评价、Google Play 美国区与 TapTap 的网页可见评价、Steam 与 Notion 的公开评价、京东公开服务目录及社区求助。搜词和来源在 `config/consumer_queries.json`。授权评论可用 `inbox/*.csv` 导入，评论行填写 `record_type=comment`、`channel`、`comment_id`、`parent_url` 和 `content`。
 3. **硬规则去噪与痛点打标（`clean_and_tag_signals`）**  
    - 长度 `< 15` 字符或命中营销导流正则（`免费领|扣111|加微|私信领|进群交流` 且无实质差评/销量指标）的记录标记 `is_noise = 1`，在终端中默认折叠并标注。
    - 根据正文与量化指标自动匹配标签：`付费意愿已验证`、`现有方案体验差/求平替`、`国内环境/使用门槛卡点`、`Token/算力成本高`、`B端交付与续费痛点`。
 4. **JSONL 回写与按日快照（`dump_db_to_jsonl`）**  
    清洗完成后将全量记录写回 `data/signals/signals_master.jsonl`，保留每条信号的首次发现日期 `first_seen` 与最新活跃日期 `last_seen`，同时输出 `data/archives/YYYY-MM-DD.json`。
 5. **立项合并与单文件终端编译（`export_dashboard.py`）**  
-   自动汇总 `scripts/dashboard_config.json` 与 `data/ideas/*.json` 下的所有立项方案，按总分降序排列，内联全部证据快照生成 `index.html` 与 `docs/index.html`。
+   自动汇总 `scripts/dashboard/dashboard_config.json` 与 `data/ideas/*.json` 下的所有立项方案，按总分降序排列，内联全部证据快照生成 `index.html` 与 `docs/index.html`。
 
 ---
 
@@ -123,15 +125,19 @@ market-radar/
 本工具仅依赖 Python 3 标准库（仅在使用 `auto_browser_collector.py` 浏览器抓包时需本机已安装的 `playwright`），无需配置复杂虚拟环境。
 
 ### 4.1 一键日常增量更新（拉取常规渠道 + 清洗 + 重新编译看板）
+Windows 的 `Windows一键采集向导.bat` 和 macOS 的 `Mac一键采集向导.command` 均可接收 `run-all`、`collect-consumer-reviews`、`export-local` 或 `xianyu-once`。省略参数打开交互菜单，`xianyu-once` 使用同一窗口登录并确认采样。
+
 ```bash
-python3 scripts/radar_cli.py run-all
+python3 run_radar.py run-all
 ```
 
-### 4.2 运行跨赛道广谱主动发现（挖掘未知新方向）
+### 4.2 采集虚拟产品和服务并导出本地信号与评论
 ```bash
 python3 scripts/discovery_scanner.py
-python3 scripts/export_dashboard.py
+python3 scripts/radar_cli.py export --with-comments
 ```
+
+打开 `.market-radar/index.html`，「信号与评论」默认查看近 7 天、全部品类、全部买单人群和全部渠道，按付费依据优先排序。选择「C 端虚拟产品与服务」时，信号和评论分别限制极客占比。
 
 ### 4.3 蝉妈妈 / 闲鱼 / 小红书全自动 XHR 抓包（免手动导 CSV）
 ```bash
@@ -206,4 +212,4 @@ python scripts/radar_cli.py export --with-comments
 
 ### 5.2 如何修改或新增立项深度评估档案？
 - **新增独立项目**：直接在 `data/ideas/` 目录下新建一个 `.json` 文件（参考 `data/ideas/AUTO-DISC-01.json` 结构，包含 `workflow_steps`、`compounding` 复利成长评估、`biz_eval` 成本与收益核算表与 `evidence_ids` 关联证据编号数组），然后运行 `python3 scripts/export_dashboard.py`。
-- **调整前端界面**：修改 `scripts/template.html`（样式与布局）或 `scripts/dashboard_app.js`（渲染逻辑），运行 `python3 scripts/export_dashboard.py` 重新编译单文件 `index.html`。
+- **调整前端界面**：修改 `scripts/dashboard/` 中的模板、样式或脚本，运行 `python3 scripts/export_dashboard.py` 重新编译单文件 `index.html`。

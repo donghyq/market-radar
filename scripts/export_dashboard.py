@@ -7,22 +7,29 @@ import pathlib
 import shutil
 
 from collab_utils import atomic_text, sync_db_from_jsonl
-from comment_profiles import PROFILE_FIELDS, label_comment
-from user_comments import COMMENT_ARCHIVE, load_comments, restore_comments
+from evidence.evidence_cache import signal_record
+from evidence.record_identity import comment_number
+from evidence.user_comments import COMMENT_ARCHIVE, assess_comments, load_comments, restore_comments
+from evidence_rules import PROFILE_FIELDS, default_rules
+from market_heat import build_market_heat
+from persona_and_freshness import enrich_signal_rows
+from signal_time import market_today
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
-CFG_PATH = pathlib.Path(__file__).resolve().parent / "dashboard_config.json"
-WP_PATH = pathlib.Path(__file__).resolve().parent / "whitepaper_config.json"
-TPL_PATH = pathlib.Path(__file__).resolve().parent / "template.html"
+DASHBOARD_DIR = pathlib.Path(__file__).resolve().with_name("dashboard")
+CFG_PATH = DASHBOARD_DIR / "dashboard_config.json"
+WP_PATH = DASHBOARD_DIR / "whitepaper_config.json"
+TPL_PATH = DASHBOARD_DIR / "template.html"
+ASSESSMENT_FIELDS = ("rule_version", "evidence_status", "counts_as_demand", "matches", "is_noise", "noise_reason", "market")
 
 
 def render_page(bundle):
     page = TPL_PATH.read_text(encoding="utf-8")
-    for name in ("dashboard_app.js", "research_workstation.js"):
+    for name in ("dashboard_app.js", "research_workstation.js", "market_heat.js"):
         code = TPL_PATH.with_name(name).read_text(encoding="utf-8")
-        page = page.replace(f'<script src="scripts/{name}"></script>', f"<script>\n{code}\n</script>")
+        page = page.replace(f'<script src="{name}"></script>', f"<script>\n{code}\n</script>")
     css = TPL_PATH.with_name("workstation.css").read_text(encoding="utf-8")
-    page = page.replace('<link rel="stylesheet" href="scripts/workstation.css">', f"<style>\n{css}\n</style>")
+    page = page.replace('<link rel="stylesheet" href="workstation.css">', f"<style>\n{css}\n</style>")
     data = json.dumps(bundle, ensure_ascii=False).replace("<", r"\u003c")
     return page.replace("__RADAR_DATA_JSON__", data)
 
@@ -30,10 +37,12 @@ def render_page(bundle):
 def comment_signals(conn):
     """Project comments onto the existing signal view without changing any stored signal ID."""
     rows = []
-    for index, comment in enumerate(load_comments(conn), 1):
-        labels = label_comment(comment)
+    comments = load_comments(conn)
+    results = assess_comments(conn, comments)
+    for comment, result in zip(comments, results):
+        labels = {field: result[field] for field in ("profile_tags", "stance", "intents", "topic_tags", *ASSESSMENT_FIELDS)}
         rows.append({
-            "id": -index,
+            "id": comment["comment_id"],
             "record_type": "comment",
             "title": "用户评论",
             "category": "用户评论",
@@ -49,29 +58,71 @@ def comment_signals(conn):
             "published_time_precision": comment["comment_time_precision"],
             "published_time_source": comment["comment_time_source"],
             "observed_at": comment["observed_at"],
-            "is_noise": 0,
+            "thread_id": comment["thread_id"],
+            "reply_to_id": comment["reply_to_id"],
+            "author_id": comment["author_id"],
+            "app_version": comment["app_version"],
+            "source_updated_at": comment["source_updated_at"],
+            "pain_tags": ",".join(result["pain_tags"]),
             **labels,
         })
     return rows
 
 
+def assign_display_ids(records):
+    """Give each record type its own consecutive display numbers."""
+    signals = sorted((row for row in records if row.get("record_type") != "comment"), key=lambda row: row["id"])
+    comments = sorted((row for row in records if row.get("record_type") == "comment"),
+                      key=lambda row: (row["channel"], comment_number(row)))
+    for prefix, group in (("S", signals), ("C", comments)):
+        for number, row in enumerate(group, 1):
+            row["display_id"] = f"{prefix}{number}"
+
+
+def attach_market_heat(bundle):
+    records = bundle["signals"]
+    assign_display_ids(records)
+    heat = build_market_heat(records, bundle["archives"])
+    groups = heat.pop("record_groups")
+    for row in records:
+        row["classification"] = {**groups[row["display_id"]], "rule_version": heat["classification_version"]}
+    bundle["market_heat"] = heat
+
+
 def write_local_csv(path, signals):
     base_fields = (
-        "id", "published_at", "freshness_tier", "audience_tag", "channel", "source_tier",
+        "display_id", "id", "published_at", "freshness_tier", "audience_tag", "channel", "source_tier",
         "category", "query_term", "author_or_app", "title", "content", "metric_primary",
         "metric_secondary", "rating_or_price", "pain_tags", "is_noise", "collected_at", "source_url",
         "record_type", "comment_id", "parent_url", "source_published_at", "published_time_precision",
-        "published_time_source", "observed_at", "stance", "intents",
+        "published_time_source", "observed_at", "stance", "intents", "topic_tags",
+        "thread_id", "reply_to_id", "author_id", "app_version", "source_updated_at",
+        "rule_version", "evidence_status", "counts_as_demand",
+        "noise_reason", "matches", "market_segment", "market_role", "paid_evidence", "market_evidence",
+        "classification_rule_version", "classification_category_id", "classification_category",
+        "classification_topic_id", "classification_topic",
+        "classification_product_id", "classification_product_name", "classification_basis", "classification_inherited_from",
     )
     tag_columns = {field: "age_band" if field == "age" else field for field in PROFILE_FIELDS}
     fields = [*base_fields, *(column for name in tag_columns.values() for column in (name, name + "_source"))]
     with atomic_text(path, encoding="utf-8-sig") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
-        for signal in signals:
+        for signal in sorted(signals, key=lambda row: (row.get("record_type") == "comment", int(row["display_id"][1:]))):
             row = {field: signal.get(field, "") for field in base_fields}
             row["record_type"] = row["record_type"] or "signal"
             row["intents"] = "、".join(signal.get("intents", ()))
+            row["topic_tags"] = "、".join(signal.get("topic_tags", ()))
+            row["matches"] = json.dumps(signal.get("matches", []), ensure_ascii=False)
+            market = signal.get("market", {})
+            row["market_segment"] = market.get("segment", "")
+            row["market_role"] = market.get("role", "")
+            row["paid_evidence"] = market.get("paid_evidence", "")
+            row["market_evidence"] = json.dumps(market.get("facts", {}), ensure_ascii=False)
+            classification = signal.get("classification", {})
+            for field in ("rule_version", "category_id", "category", "topic_id", "topic", "product_id",
+                          "product_name", "basis", "inherited_from"):
+                row["classification_" + field] = classification.get(field, "")
             for field, field_name in tag_columns.items():
                 tag = signal.get("profile_tags", {}).get(field, {})
                 row[field_name] = tag.get("value", "")
@@ -97,6 +148,15 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
             conn.close()
 
     signals = [dict(r) for r in conn.execute("SELECT * FROM raw_signals ORDER BY is_noise ASC, id ASC").fetchall()]
+    for signal in signals:
+        signal.pop("origin_key", None)
+    rules = default_rules()
+    for row in signals:
+        result = rules.evaluate(signal_record(row))
+        fields = (*ASSESSMENT_FIELDS, "intents") if with_comments else ("market", "counts_as_demand", "evidence_status")
+        row.update({field: result[field] for field in fields})
+        if with_comments:
+            row["pain_tags"] = ",".join(result["pain_tags"])
     cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
     wp = json.loads(WP_PATH.read_text(encoding="utf-8")) if WP_PATH.exists() else {}
 
@@ -123,8 +183,7 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
             except Exception:
                 pass
 
-    ps_path = base_dir / "data" / "persona_stats.json"
-    persona_stats = json.loads(ps_path.read_text(encoding="utf-8")) if ps_path.exists() else {}
+    persona_stats = enrich_signal_rows(signals, market_today())
     tr_path = base_dir / "data" / "tech_radar.json"
     tech_radar = json.loads(tr_path.read_text(encoding="utf-8")) if tr_path.exists() else {"items": []}
     bundle = {
@@ -136,10 +195,12 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
         "signals": signals,
         "whitepaper": wp,
         "archives": archives,
+        "consumer_market": True,
     }
 
     if with_comments:
         comments = comment_signals(conn)
+        conn.commit()
         bundle["comment_coverage"] = {
             "total": len(comments),
             "counts": {
@@ -148,6 +209,7 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
             },
         }
         signals.extend(comments)
+        attach_market_heat(bundle)
         local_dir = base_dir / COMMENT_ARCHIVE.parent
         write_local_csv(local_dir / "exports/signals_full.csv", signals)
         out = local_dir / "index.html"
@@ -155,6 +217,7 @@ def export_all(conn=None, base_dir=BASE_DIR, *, with_comments=False):
             stream.write(render_page(bundle))
         return out
 
+    attach_market_heat(bundle)
     out = base_dir / "index.html"
     docs = base_dir / "docs/index.html"
     out.write_text(render_page(bundle), encoding="utf-8")
